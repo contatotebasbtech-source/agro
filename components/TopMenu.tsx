@@ -1,33 +1,18 @@
-'use client';
+'use client'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+const menu = ['geral','cafe','leite','gado','milho','peixe','soja','outros']
 
-const menu = [
-  { label: 'Geral', href: '/geral' },
-  { label: 'Cafe', href: '/cafe' },
-  { label: 'Leite', href: '/leite' },
-  { label: 'Gado', href: '/gado' },
-  { label: 'Milho', href: '/milho' },
-  { label: 'Peixe', href: '/peixe' },
-  { label: 'Soja', href: '/soja' },
-  { label: 'Outros', href: '/outros' },
-];
-
-export default function TopMenu() {
-  const pathname = usePathname();
-
+export default function TopMenu(){
+  const p = usePathname()
   return (
     <div className="top-menu">
-      {menu.map((item) => (
-        <Link
-          key={item.href}
-          href={item.href}
-          className={pathname === item.href ? 'menu-btn active' : 'menu-btn'}
-        >
-          {item.label}
+      {menu.map(m=>(
+        <Link key={m} href={`/${m}`} className={p===`/${m}`?'menu-btn active':'menu-btn'}>
+          {m.toUpperCase()}
         </Link>
       ))}
     </div>
-  );
+  )
 }

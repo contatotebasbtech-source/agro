@@ -1,19 +1,12 @@
-type Card = { title: string; value: string; detail?: string };
-
-type Props = {
-  cards: Card[];
-};
-
-export default function StatCards({ cards }: Props) {
+export default function StatCards({cards}:{cards:any[]}){
   return (
     <div className="card-grid">
-      {cards.map((card) => (
-        <div className="card" key={card.title}>
-          <h4>{card.title}</h4>
-          <p className="value">{card.value}</p>
-          {card.detail && <span className="detail">{card.detail}</span>}
+      {cards.map((c,i)=>(
+        <div key={i} className="card">
+          <h4>{c.title}</h4>
+          <p>{c.value}</p>
         </div>
       ))}
     </div>
-  );
+  )
 }

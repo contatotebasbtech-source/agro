@@ -1,13 +1,8 @@
-type Props = {
-  title: string;
-  subtitle: string;
-};
-
-export default function SectionHeader({ title, subtitle }: Props) {
+export default function SectionHeader({title, subtitle}:{title:string, subtitle:string}){
   return (
-    <header className="section-header">
+    <header>
       <h2>{title}</h2>
       <p>{subtitle}</p>
     </header>
-  );
+  )
 }
