@@ -1,7 +1,6 @@
 
 "use client"
 import Link from "next/link"
-import ModuleSwitcher from "@/components/module-switcher"
 export default function Layout({children}:{children:React.ReactNode}){
  return(
  <div className="flex h-screen">
@@ -14,7 +13,7 @@ export default function Layout({children}:{children:React.ReactNode}){
   </aside>
   <div className="flex-1 flex flex-col">
    <header className="h-14 bg-white border-b flex items-center justify-between px-4">
-    <ModuleSwitcher/>
+    
     <span>Conta</span>
    </header>
    <main className="flex-1 bg-green-50 p-6">{children}</main>
