@@ -1,1 +1,0 @@
-export default function Page(){return(<div><h1 className="text-xl font-semibold">Insumos</h1></div>)}
