@@ -1,23 +1,31 @@
-import TopMenu from '@/components/TopMenu'
-import SideFarmPanel from '@/components/SideFarmPanel'
-import SectionHeader from '@/components/SectionHeader'
-import StatCards from '@/components/StatCards'
-import TodoAlerts from '@/components/TodoAlerts'
-import { sections } from '@/lib/data'
+﻿import TopMenu from '@/components/TopMenu';
+import SideFarmPanel from '@/components/SideFarmPanel';
+import SectionHeader from '@/components/SectionHeader';
+import StatCards from '@/components/StatCards';
+import TodoAlerts from '@/components/TodoAlerts';
+import { sections } from '@/lib/data';
 
-export default function Page(){
-  const s = sections.Peixe
+export default function PeixePage() {
+  const section = sections.Peixe;
+
   return (
     <main className="app-shell">
-      <header className="app-header"><TopMenu/></header>
+      <header className="app-header">
+        <div className="logo-area">
+          <img src="/logoagro1.png" alt="Logo Agro" />
+          <span className="brand">Tebas Tech Agro</span>
+        </div>
+        <TopMenu />
+      </header>
+
       <div className="app-body">
-        <SideFarmPanel/>
+        <SideFarmPanel />
         <section className="dash-section">
-          <SectionHeader title="Peixe" subtitle={s.subtitle}/>
-          <StatCards cards={s.cards}/>
-          <TodoAlerts todos={s.todos} alerts={s.alerts}/>
+          <SectionHeader title="Peixe" subtitle={section.subtitle} />
+          <StatCards cards={section.cards} />
+          <TodoAlerts todos={section.todos} alerts={section.alerts} />
         </section>
       </div>
     </main>
-  )
+  );
 }
