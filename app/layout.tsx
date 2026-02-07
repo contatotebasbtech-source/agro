@@ -1,10 +1,5 @@
-﻿import './globals.css';
-
-export const metadata = {
-  title: 'Tebas Tech Agro',
-  description: 'Painel agrícola por produção',
-};
-
+﻿import "./globals.css";
+import TopMenu from "../components/TopMenu";
 export default function RootLayout({
   children,
 }: {
@@ -12,7 +7,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="pt-BR">
-      <body>{children}</body>
+      <body>
+        <TopMenu />
+        {children}
+      </body>
     </html>
   );
 }
