@@ -1,273 +1,528 @@
-'use client';
+"use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from "react";
 
-type AssetType = 'Máquina' | 'Veículo' | 'Implemento' | 'Imóvel' | 'Outros';
+type CategoriaKey =
+  | "Maquinas"
+  | "Veiculos"
+  | "Implementos"
+  | "Infra"
+  | "EnergiaAgua"
+  | "Ferramentas"
+  | "Outros";
 
-type Asset = {
-  id: string;
-  nome: string;
-  tipo: AssetType;
-  valorAquisicao: number;
-  dataAquisicao: string; // yyyy-mm-dd
-  observacao?: string;
+const CATEGORIAS: { key: CategoriaKey; label: string }[] = [
+  { key: "Maquinas", label: "Máquinas" },
+  { key: "Veiculos", label: "Veículos" },
+  { key: "Implementos", label: "Implementos" },
+  { key: "Infra", label: "Infra / Oficina" },
+  { key: "EnergiaAgua", label: "Energia / Água" },
+  { key: "Ferramentas", label: "Ferramentas" },
+  { key: "Outros", label: "Outros" },
+];
+
+const SUBTIPOS: Record<CategoriaKey, string[]> = {
+  Maquinas: [
+    "Trator",
+    "Trator (pequeno)",
+    "Trator (médio)",
+    "Trator (grande)",
+    "Colheitadeira",
+    "Plantadeira",
+    "Semeadora",
+    "Pulverizador (barra)",
+    "Pulverizador (costal/motorizado)",
+    "Adubadora / Distribuidor",
+    "Ensiladeira",
+    "Carregadeira / Pá carregadeira",
+    "Mini carregadeira",
+    "Retroescavadeira",
+    "Escavadeira",
+    "Motoniveladora",
+    "Roçadeira (máquina)",
+    "Empilhadeira",
+    "Outro (máquina)",
+  ],
+  Veiculos: [
+    "Pick-up",
+    "Caminhão",
+    "Caminhão (toco)",
+    "Caminhão (truck)",
+    "Caminhão (bitruck)",
+    "Carreta / Bitrem",
+    "Moto",
+    "Quadriciclo",
+    "Carro",
+    "Outro (veículo)",
+  ],
+  Implementos: [
+    "Grade",
+    "Arado",
+    "Subsolador",
+    "Roçadeira",
+    "Carreta agrícola",
+    "Enxada rotativa",
+    "Plataforma de colheita",
+    "Vagão forrageiro",
+    "Sulcador",
+    "Rolo compactador",
+    "Outro (implemento)",
+  ],
+  Infra: [
+    "Silo / Armazém",
+    "Barracão / Galpão",
+    "Curral / Brete",
+    "Cercas",
+    "Balança",
+    "Tanque de leite",
+    "Ordenhadeira",
+    "Resfriador",
+    "Oficina / Ferramental fixo",
+    "Outro (infra)",
+  ],
+  EnergiaAgua: [
+    "Gerador",
+    "Bomba d'água",
+    "Motor estacionário",
+    "Irrigação (pivô)",
+    "Irrigação (aspersão)",
+    "Irrigação (gotejo)",
+    "Poço / Captação",
+    "Placas solares",
+    "Outro (energia/água)",
+  ],
+  Ferramentas: [
+    "Ferramentas manuais",
+    "Ferramentas elétricas",
+    "Solda / Oficina",
+    "Medidores / Instrumentos",
+    "Outro (ferramentas)",
+  ],
+  Outros: ["Outros"],
 };
 
-function moneyBRL(value: number) {
-  return (value ?? 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+type PatrimonioItem = {
+  id: string;
+  nome: string;
+  categoria?: CategoriaKey; // itens antigos podem não ter
+  tipo: string; // agora é o subtipo
+  valorAquisicao?: number;
+  dataAquisicao?: string; // YYYY-MM-DD
+  observacao?: string;
+  createdAt: string; // ISO
+};
+
+const LS_KEY = "patrimonio_items_v1";
+
+function formatBRL(v: number) {
+  try {
+    return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  } catch {
+    return `R$ ${v}`;
+  }
+}
+
+function formatDateBR(iso?: string) {
+  if (!iso) return "—";
+  // iso esperado YYYY-MM-DD
+  const [y, m, d] = iso.split("-");
+  if (!y || !m || !d) return iso;
+  return `${d}/${m}/${y}`;
+}
+
+function uid() {
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 export default function PatrimonioPage() {
-  const [items, setItems] = useState<Asset[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
+  const [items, setItems] = useState<PatrimonioItem[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
 
-  const [nome, setNome] = useState('');
-  const [tipo, setTipo] = useState<AssetType>('Máquina');
-  const [valorAquisicao, setValorAquisicao] = useState<string>('');
-  const [dataAquisicao, setDataAquisicao] = useState<string>('');
-  const [observacao, setObservacao] = useState<string>('');
+  // Form
+  const [form, setForm] = useState({
+    nome: "",
+    categoria: "Maquinas" as CategoriaKey,
+    tipo: SUBTIPOS.Maquinas[0],
+    valorAquisicao: "",
+    dataAquisicao: "",
+    observacao: "",
+  });
 
-  async function load() {
-    try {
-      setLoading(true);
-      setErr(null);
-      const res = await fetch('/api/patrimonio', { cache: 'no-store' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Erro ao carregar');
-      setItems(Array.isArray(data.items) ? data.items : []);
-    } catch (e: any) {
-      setErr(e?.message || 'Erro');
-    } finally {
-      setLoading(false);
-    }
-  }
+  // Filtros
+  const [fCategoria, setFCategoria] = useState<CategoriaKey | "Todas">("Todas");
+  const [fTipo, setFTipo] = useState<string>("Todos");
+  const [search, setSearch] = useState("");
 
+  // Load
   useEffect(() => {
-    load();
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setItems(parsed);
+      }
+    } catch {
+      // ignore
+    }
   }, []);
 
-  const metrics = useMemo(() => {
-    const totalItens = items.length;
-    const totalAquisicao = items.reduce((acc, it) => acc + (it.valorAquisicao || 0), 0);
-
-    const porTipo = items.reduce<Record<string, number>>((acc, it) => {
-      acc[it.tipo] = (acc[it.tipo] || 0) + 1;
-      return acc;
-    }, {});
-
-    const topTipo = Object.entries(porTipo).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—';
-
-    return { totalItens, totalAquisicao, topTipo };
+  // Save
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(items));
+    } catch {
+      // ignore
+    }
   }, [items]);
 
-  function resetForm() {
-    setNome('');
-    setTipo('Máquina');
-    setValorAquisicao('');
-    setDataAquisicao('');
-    setObservacao('');
+  const totalItens = items.length;
+  const totalValor = useMemo(() => {
+    return items.reduce((acc, it) => acc + (it.valorAquisicao ?? 0), 0);
+  }, [items]);
+
+  const tiposFiltroDisponiveis = useMemo(() => {
+    if (fCategoria === "Todas") return ["Todos"];
+    return ["Todos", ...(SUBTIPOS[fCategoria] ?? ["Outros"])];
+  }, [fCategoria]);
+
+  const filtrados = useMemo(() => {
+    const s = search.trim().toLowerCase();
+
+    return items
+      .map((it) => ({
+        ...it,
+        categoria: (it.categoria ?? "Maquinas") as CategoriaKey,
+      }))
+      .filter((it) => {
+        if (fCategoria !== "Todas" && it.categoria !== fCategoria) return false;
+        if (fTipo !== "Todos" && it.tipo !== fTipo) return false;
+        if (s) {
+          const hay = `${it.nome} ${it.tipo} ${it.observacao ?? ""}`.toLowerCase();
+          if (!hay.includes(s)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  }, [items, fCategoria, fTipo, search]);
+
+  function abrirModal() {
+    setModalOpen(true);
   }
 
-  async function addItem() {
-    const v = Number(String(valorAquisicao).replace(/\./g, '').replace(',', '.'));
-    if (!nome.trim()) return alert('Informe o nome do item.');
-    if (!dataAquisicao) return alert('Informe a data de aquisição.');
-    if (!Number.isFinite(v) || v <= 0) return alert('Informe um valor de aquisição válido.');
-
-    try {
-      const res = await fetch('/api/patrimonio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          nome: nome.trim(),
-          tipo,
-          valorAquisicao: v,
-          dataAquisicao,
-          observacao: observacao.trim() ? observacao.trim() : undefined,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Erro ao salvar');
-
-      setModalOpen(false);
-      resetForm();
-      load();
-    } catch (e: any) {
-      alert(e?.message || 'Erro');
-    }
+  function fecharModal() {
+    setModalOpen(false);
   }
 
-  async function removeItem(id: string) {
-    if (!confirm('Remover este item do patrimônio?')) return;
-    try {
-      const res = await fetch(`/api/patrimonio?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Erro ao remover');
-      load();
-    } catch (e: any) {
-      alert(e?.message || 'Erro');
+  function limparForm() {
+    setForm({
+      nome: "",
+      categoria: "Maquinas",
+      tipo: SUBTIPOS.Maquinas[0],
+      valorAquisicao: "",
+      dataAquisicao: "",
+      observacao: "",
+    });
+  }
+
+  function salvarItem() {
+    const nome = form.nome.trim();
+    if (!nome) {
+      alert("Informe o nome do item.");
+      return;
     }
+
+    const valorNum =
+      form.valorAquisicao.trim() === ""
+        ? undefined
+        : Number(form.valorAquisicao.replace(",", "."));
+
+    if (valorNum !== undefined && Number.isNaN(valorNum)) {
+      alert("Valor de aquisição inválido.");
+      return;
+    }
+
+    const novo: PatrimonioItem = {
+      id: uid(),
+      nome,
+      categoria: form.categoria,
+      tipo: form.tipo,
+      valorAquisicao: valorNum,
+      dataAquisicao: form.dataAquisicao || undefined,
+      observacao: form.observacao.trim() || undefined,
+      createdAt: new Date().toISOString(),
+    };
+
+    setItems((prev) => [novo, ...prev]);
+    fecharModal();
+    limparForm();
+  }
+
+  function excluirItem(id: string) {
+    if (!confirm("Deseja remover este item do patrimônio?")) return;
+    setItems((prev) => prev.filter((x) => x.id !== id));
+  }
+
+  function limparFiltros() {
+    setFCategoria("Todas");
+    setFTipo("Todos");
+    setSearch("");
   }
 
   return (
-    <main className="pat-wrap">
-      <div className="pat-topbar">
-        <div className="pat-topbar-left">
-          <div className="pat-title">Patrimônio</div>
-          <div className="pat-subtitle">Controle de bens e equipamentos da fazenda</div>
+    <main className="pat-page">
+      <div className="pat-container">
+        {/* Header */}
+        <div className="pat-header">
+          <div>
+            <h1 className="pat-title">Patrimônio</h1>
+            <p className="pat-subtitle">Controle de bens e equipamentos da fazenda</p>
+          </div>
+
+          <div className="pat-header-actions">
+            <button className="pat-btn pat-btn-primary" onClick={abrirModal}>
+              + Adicionar
+            </button>
+          </div>
         </div>
 
-        <button className="pat-btn pat-btn-primary" onClick={() => setModalOpen(true)}>
-          + Adicionar
-        </button>
+        {/* Métricas */}
+        <div className="pat-grid">
+          <div className="pat-card pat-metric">
+            <div className="pat-metric-label">Total de bens cadastrados</div>
+            <div className="pat-metric-value">{totalItens}</div>
+            <div className="pat-metric-hint">Itens no patrimônio</div>
+          </div>
+
+          <div className="pat-card pat-metric">
+            <div className="pat-metric-label">Valor de aquisição</div>
+            <div className="pat-metric-value">{formatBRL(totalValor)}</div>
+            <div className="pat-metric-hint">Soma do valor informado</div>
+          </div>
+
+          <div className="pat-card pat-metric">
+            <div className="pat-metric-label">Dica</div>
+            <div className="pat-metric-value" style={{ fontSize: 16 }}>
+              Filtros rápidos
+            </div>
+            <div className="pat-metric-hint">
+              Use Categoria / Tipo / Busca para encontrar máquinas rápido.
+            </div>
+          </div>
+        </div>
+
+        {/* Filtros + Lista */}
+        <div className="pat-layout">
+          <div className="pat-card">
+            <div className="pat-card-title">Filtros</div>
+
+            <div className="pat-filters">
+              <div className="pat-field">
+                <label>Categoria</label>
+                <select
+                  value={fCategoria}
+                  onChange={(e) => {
+                    const val = e.target.value as any;
+                    setFCategoria(val);
+                    // ao trocar categoria, resetar tipo
+                    setFTipo("Todos");
+                  }}
+                >
+                  <option value="Todas">Todas</option>
+                  {CATEGORIAS.map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pat-field">
+                <label>Tipo</label>
+                <select value={fTipo} onChange={(e) => setFTipo(e.target.value)}>
+                  {tiposFiltroDisponiveis.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pat-field pat-field-wide">
+                <label>Buscar</label>
+                <input
+                  placeholder="Digite o nome (ex: Trator John Deere)"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+
+              <div className="pat-filter-actions">
+                <button className="pat-btn" onClick={limparFiltros}>
+                  Limpar
+                </button>
+                <button className="pat-btn pat-btn-ghost" onClick={abrirModal}>
+                  + Adicionar item
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="pat-card">
+            <div className="pat-card-title">Itens cadastrados</div>
+
+            {filtrados.length === 0 ? (
+              <div className="pat-empty">
+                <div className="pat-empty-title">Nenhum item cadastrado</div>
+                <div className="pat-empty-subtitle">
+                  Clique em <b>+ Adicionar</b> para cadastrar seu primeiro item.
+                </div>
+              </div>
+            ) : (
+              <div className="pat-table-wrap">
+                <table className="pat-table">
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Categoria</th>
+                      <th>Tipo</th>
+                      <th>Valor (R$)</th>
+                      <th>Data</th>
+                      <th>Obs.</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtrados.map((it) => {
+                      const cat = (it.categoria ?? "Maquinas") as CategoriaKey;
+                      const catLabel =
+                        CATEGORIAS.find((c) => c.key === cat)?.label ?? "Máquinas";
+
+                      return (
+                        <tr key={it.id}>
+                          <td className="pat-td-strong">{it.nome}</td>
+                          <td>{catLabel}</td>
+                          <td>{it.tipo}</td>
+                          <td>{it.valorAquisicao != null ? formatBRL(it.valorAquisicao) : "—"}</td>
+                          <td>{formatDateBR(it.dataAquisicao)}</td>
+                          <td className="pat-td-muted">{it.observacao ?? "—"}</td>
+                          <td className="pat-td-actions">
+                            <button
+                              className="pat-btn pat-btn-danger"
+                              onClick={() => excluirItem(it.id)}
+                              title="Excluir"
+                            >
+                              Excluir
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
-      <section className="pat-grid">
-        <div className="pat-card">
-          <div className="pat-card-head">
-            <div className="pat-icon">🚜</div>
-            <div>
-              <div className="pat-metric-label">Patrimônio</div>
-              <div className="pat-metric-value">{metrics.totalItens} itens</div>
-            </div>
-          </div>
-          <div className="pat-muted">Total de bens cadastrados</div>
-        </div>
-
-        <div className="pat-card">
-          <div className="pat-card-head">
-            <div className="pat-icon">💰</div>
-            <div>
-              <div className="pat-metric-label">Valor de aquisição</div>
-              <div className="pat-metric-value">{moneyBRL(metrics.totalAquisicao)}</div>
-            </div>
-          </div>
-          <div className="pat-muted">Soma dos valores de compra</div>
-        </div>
-
-        <div className="pat-card">
-          <div className="pat-card-head">
-            <div className="pat-icon">📌</div>
-            <div>
-              <div className="pat-metric-label">Tipo mais comum</div>
-              <div className="pat-metric-value">{metrics.topTipo}</div>
-            </div>
-          </div>
-          <div className="pat-muted">Ajuda a entender o perfil</div>
-        </div>
-      </section>
-
-      <section className="pat-panel">
-        <div className="pat-panel-head">
-          <div className="pat-panel-title">Itens cadastrados</div>
-          <div className="pat-hint">{loading ? 'Carregando…' : err ? `Erro: ${err}` : 'Clique em + Adicionar'}</div>
-        </div>
-
-        <div className="pat-table-wrap">
-          <table className="pat-table">
-            <thead>
-              <tr>
-                <th>Item</th>
-                <th>Tipo</th>
-                <th>Data</th>
-                <th className="right">Valor</th>
-                <th className="right">Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="pat-empty">
-                    Nenhum item cadastrado ainda.
-                  </td>
-                </tr>
-              ) : (
-                items.map((it) => (
-                  <tr key={it.id}>
-                    <td>
-                      <div className="pat-item-name">{it.nome}</div>
-                      {it.observacao ? <div className="pat-item-sub">{it.observacao}</div> : null}
-                    </td>
-                    <td>
-                      <span className="pat-badge">{it.tipo}</span>
-                    </td>
-                    <td>{new Date(it.dataAquisicao + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
-                    <td className="right">{moneyBRL(it.valorAquisicao)}</td>
-                    <td className="right">
-                      <button className="pat-btn pat-btn-ghost" onClick={() => removeItem(it.id)}>
-                        Remover
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
+      {/* Modal */}
       {modalOpen && (
-        <div className="pat-modal-backdrop" onMouseDown={() => setModalOpen(false)}>
+        <div className="pat-modal-backdrop" onMouseDown={fecharModal}>
           <div className="pat-modal" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="pat-modal-head">
+            <div className="pat-modal-header">
               <div>
                 <div className="pat-modal-title">Adicionar item</div>
-                <div className="pat-muted">Cadastre um bem do patrimônio da fazenda</div>
+                <div className="pat-modal-subtitle">Cadastre um bem do patrimônio da fazenda</div>
               </div>
-              <button className="pat-btn pat-btn-ghost" onClick={() => setModalOpen(false)}>
+              <button className="pat-btn" onClick={fecharModal}>
                 Fechar
               </button>
             </div>
 
-            <div className="pat-form">
-              <label className="pat-field">
-                <span>Nome do item</span>
-                <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex: Trator John Deere" />
-              </label>
+            <div className="pat-modal-body">
+              <div className="pat-form-grid">
+                <div className="pat-field pat-field-wide">
+                  <label>Nome do item</label>
+                  <input
+                    placeholder="Ex: Trator John Deere"
+                    value={form.nome}
+                    onChange={(e) => setForm((p) => ({ ...p, nome: e.target.value }))}
+                  />
+                </div>
 
-              <label className="pat-field">
-                <span>Tipo</span>
-                <select value={tipo} onChange={(e) => setTipo(e.target.value as AssetType)}>
-                  <option>Máquina</option>
-                  <option>Veículo</option>
-                  <option>Implemento</option>
-                  <option>Imóvel</option>
-                  <option>Outros</option>
-                </select>
-              </label>
+                <div className="pat-field">
+                  <label>Categoria</label>
+                  <select
+                    value={form.categoria}
+                    onChange={(e) => {
+                      const cat = e.target.value as CategoriaKey;
+                      const primeiro = SUBTIPOS[cat]?.[0] ?? "Outros";
+                      setForm((p) => ({ ...p, categoria: cat, tipo: primeiro }));
+                    }}
+                  >
+                    {CATEGORIAS.map((c) => (
+                      <option key={c.key} value={c.key}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              <label className="pat-field">
-                <span>Valor de aquisição (R$)</span>
-                <input value={valorAquisicao} onChange={(e) => setValorAquisicao(e.target.value)} placeholder="Ex: 280000" inputMode="decimal" />
-              </label>
+                <div className="pat-field">
+                  <label>Tipo</label>
+                  <select
+                    value={form.tipo}
+                    onChange={(e) => setForm((p) => ({ ...p, tipo: e.target.value }))}
+                  >
+                    {(SUBTIPOS[form.categoria] ?? ["Outros"]).map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              <label className="pat-field">
-                <span>Data de aquisição</span>
-                <input value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} type="date" />
-              </label>
+                <div className="pat-field">
+                  <label>Valor de aquisição (R$)</label>
+                  <input
+                    placeholder="Ex: 280000"
+                    value={form.valorAquisicao}
+                    onChange={(e) => setForm((p) => ({ ...p, valorAquisicao: e.target.value }))}
+                  />
+                </div>
 
-              <label className="pat-field pat-field-full">
-                <span>Observação (opcional)</span>
-                <input value={observacao} onChange={(e) => setObservacao(e.target.value)} placeholder="Ex: Manutenção em dia" />
-              </label>
+                <div className="pat-field">
+                  <label>Data de aquisição</label>
+                  <input
+                    type="date"
+                    value={form.dataAquisicao}
+                    onChange={(e) => setForm((p) => ({ ...p, dataAquisicao: e.target.value }))}
+                  />
+                </div>
+
+                <div className="pat-field pat-field-wide">
+                  <label>Observação (opcional)</label>
+                  <input
+                    placeholder="Ex: Manutenção em dia"
+                    value={form.observacao}
+                    onChange={(e) => setForm((p) => ({ ...p, observacao: e.target.value }))}
+                  />
+                </div>
+              </div>
             </div>
 
-            <div className="pat-modal-actions">
+            <div className="pat-modal-footer">
               <button
-                className="pat-btn pat-btn-ghost"
+                className="pat-btn"
                 onClick={() => {
-                  resetForm();
-                  setModalOpen(false);
+                  limparForm();
+                  fecharModal();
                 }}
               >
                 Cancelar
               </button>
-
-              <button className="pat-btn pat-btn-primary" onClick={addItem}>
+              <button className="pat-btn pat-btn-primary" onClick={salvarItem}>
                 Salvar
               </button>
             </div>
@@ -275,239 +530,262 @@ export default function PatrimonioPage() {
         </div>
       )}
 
+      {/* CSS local (não depende do Tailwind) */}
       <style jsx>{`
-        .pat-wrap {
-          padding: 18px;
-          max-width: 1100px;
+        .pat-page {
+          min-height: calc(100vh - 0px);
+          padding: 24px 16px 56px;
+        }
+        .pat-container {
+          max-width: 1180px;
           margin: 0 auto;
         }
-        .pat-topbar {
+
+        .pat-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          margin-bottom: 16px;
+          padding: 18px 18px;
+          border-radius: 16px;
+          background: rgba(12, 26, 16, 0.6);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          backdrop-filter: blur(10px);
+        }
+        .pat-title {
+          font-size: 32px;
+          font-weight: 800;
+          margin: 0;
+        }
+        .pat-subtitle {
+          margin: 4px 0 0;
+          opacity: 0.8;
+        }
+
+        .pat-btn {
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(255, 255, 255, 0.06);
+          color: inherit;
+          padding: 10px 14px;
+          border-radius: 12px;
+          cursor: pointer;
+          font-weight: 700;
+        }
+        .pat-btn:hover {
+          background: rgba(255, 255, 255, 0.1);
+        }
+        .pat-btn-primary {
+          background: rgba(42, 167, 61, 0.25);
+          border-color: rgba(42, 167, 61, 0.45);
+        }
+        .pat-btn-primary:hover {
+          background: rgba(42, 167, 61, 0.34);
+        }
+        .pat-btn-ghost {
+          background: transparent;
+        }
+        .pat-btn-danger {
+          background: rgba(220, 38, 38, 0.16);
+          border-color: rgba(220, 38, 38, 0.35);
+        }
+        .pat-btn-danger:hover {
+          background: rgba(220, 38, 38, 0.22);
+        }
+
+        .pat-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+          margin-bottom: 14px;
+        }
+        .pat-card {
+          border-radius: 16px;
+          background: rgba(12, 26, 16, 0.55);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          backdrop-filter: blur(10px);
+          padding: 14px;
+        }
+        .pat-card-title {
+          font-weight: 900;
+          margin-bottom: 10px;
+          opacity: 0.95;
+        }
+        .pat-metric-label {
+          font-size: 12px;
+          opacity: 0.75;
+        }
+        .pat-metric-value {
+          font-size: 22px;
+          font-weight: 900;
+          margin-top: 6px;
+        }
+        .pat-metric-hint {
+          margin-top: 6px;
+          font-size: 12px;
+          opacity: 0.7;
+        }
+
+        .pat-layout {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 14px;
+        }
+
+        .pat-filters {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 12px;
+          align-items: end;
+        }
+        .pat-field {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .pat-field label {
+          font-size: 12px;
+          opacity: 0.75;
+          font-weight: 700;
+        }
+        .pat-field input,
+        .pat-field select {
+          height: 40px;
+          padding: 0 12px;
+          border-radius: 12px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(255, 255, 255, 0.06);
+          color: inherit;
+          outline: none;
+        }
+        .pat-field input::placeholder {
+          opacity: 0.7;
+        }
+        .pat-field-wide {
+          grid-column: span 2;
+        }
+        .pat-filter-actions {
+          display: flex;
+          gap: 10px;
+          justify-content: flex-end;
+        }
+
+        .pat-empty {
+          padding: 18px;
+          border-radius: 14px;
+          border: 1px dashed rgba(255, 255, 255, 0.18);
+          background: rgba(255, 255, 255, 0.03);
+        }
+        .pat-empty-title {
+          font-weight: 900;
+          margin-bottom: 6px;
+        }
+        .pat-empty-subtitle {
+          opacity: 0.8;
+        }
+
+        .pat-table-wrap {
+          width: 100%;
+          overflow: auto;
+          border-radius: 14px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .pat-table {
+          width: 100%;
+          border-collapse: collapse;
+          min-width: 900px;
+        }
+        .pat-table th,
+        .pat-table td {
+          padding: 10px 12px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+          vertical-align: middle;
+          text-align: left;
+        }
+        .pat-table th {
+          font-size: 12px;
+          opacity: 0.75;
+          font-weight: 900;
+          background: rgba(255, 255, 255, 0.03);
+        }
+        .pat-td-strong {
+          font-weight: 900;
+        }
+        .pat-td-muted {
+          opacity: 0.8;
+          max-width: 260px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .pat-td-actions {
+          text-align: right;
+        }
+
+        .pat-modal-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.55);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 18px;
+          z-index: 9999;
+        }
+        .pat-modal {
+          width: min(860px, 100%);
+          border-radius: 18px;
+          background: rgba(10, 22, 14, 0.9);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          backdrop-filter: blur(12px);
+          overflow: hidden;
+        }
+        .pat-modal-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 12px;
           padding: 14px 14px;
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.06);
-          border: 1px solid rgba(255, 255, 255, 0.10);
-          backdrop-filter: blur(8px);
-          margin-bottom: 14px;
-        }
-        .pat-title {
-          font-size: 22px;
-          font-weight: 900;
-          letter-spacing: 0.2px;
-        }
-        .pat-subtitle {
-          opacity: 0.85;
-          font-size: 13px;
-          margin-top: 2px;
-        }
-        .pat-grid {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 12px;
-          margin-bottom: 12px;
-        }
-        @media (max-width: 980px) {
-          .pat-grid {
-            grid-template-columns: 1fr;
-          }
-        }
-        .pat-card {
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.06);
-          border: 1px solid rgba(255, 255, 255, 0.10);
-          padding: 14px;
-        }
-        .pat-card-head {
-          display: flex;
-          gap: 10px;
-          align-items: center;
-          margin-bottom: 8px;
-        }
-        .pat-icon {
-          width: 40px;
-          height: 40px;
-          border-radius: 12px;
-          display: grid;
-          place-items: center;
-          background: rgba(255, 255, 255, 0.10);
-          border: 1px solid rgba(255, 255, 255, 0.10);
-          font-size: 18px;
-        }
-        .pat-metric-label {
-          font-size: 12px;
-          opacity: 0.85;
-        }
-        .pat-metric-value {
-          font-size: 18px;
-          font-weight: 900;
-          margin-top: 2px;
-        }
-        .pat-muted {
-          font-size: 12px;
-          opacity: 0.80;
-        }
-        .pat-panel {
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.10);
-          overflow: hidden;
-        }
-        .pat-panel-head {
-          padding: 14px;
-          display: flex;
-          align-items: flex-end;
-          justify-content: space-between;
-          gap: 12px;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.10);
-        }
-        .pat-panel-title {
-          font-size: 16px;
-          font-weight: 900;
-        }
-        .pat-hint {
-          font-size: 12px;
-          opacity: 0.80;
-        }
-        .pat-table-wrap {
-          overflow: auto;
-        }
-        .pat-table {
-          width: 100%;
-          border-collapse: collapse;
-          min-width: 720px;
-        }
-        .pat-table th,
-        .pat-table td {
-          padding: 12px 14px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-          vertical-align: top;
-        }
-        .pat-table th {
-          text-align: left;
-          font-size: 12px;
-          opacity: 0.85;
-          font-weight: 700;
-          white-space: nowrap;
-        }
-        .right {
-          text-align: right;
-        }
-        .pat-item-name {
-          font-weight: 900;
-        }
-        .pat-item-sub {
-          font-size: 12px;
-          opacity: 0.85;
-          margin-top: 2px;
-        }
-        .pat-badge {
-          display: inline-flex;
-          padding: 6px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          background: rgba(255, 255, 255, 0.10);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          white-space: nowrap;
-        }
-        .pat-empty {
-          padding: 22px 14px;
-          opacity: 0.85;
-        }
-        .pat-btn {
-          border: 1px solid rgba(255, 255, 255, 0.18);
-          background: rgba(255, 255, 255, 0.08);
-          color: inherit;
-          border-radius: 12px;
-          padding: 9px 12px;
-          font-weight: 800;
-          cursor: pointer;
-          transition: transform 120ms ease, background 120ms ease;
-        }
-        .pat-btn:hover {
-          background: rgba(255, 255, 255, 0.12);
-          transform: translateY(-1px);
-        }
-        .pat-btn:active {
-          transform: translateY(0px);
-        }
-        .pat-btn-primary {
-          background: rgba(80, 220, 120, 0.20);
-          border-color: rgba(80, 220, 120, 0.35);
-        }
-        .pat-btn-primary:hover {
-          background: rgba(80, 220, 120, 0.26);
-        }
-        .pat-btn-ghost {
-          background: transparent;
-        }
-        .pat-modal-backdrop {
-          position: fixed;
-          inset: 0;
-          background: rgba(0, 0, 0, 0.55);
-          display: grid;
-          place-items: center;
-          padding: 16px;
-          z-index: 50;
-        }
-        .pat-modal {
-          width: 100%;
-          max-width: 720px;
-          border-radius: 18px;
-          background: rgba(15, 30, 18, 0.92);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          backdrop-filter: blur(10px);
-          overflow: hidden;
-        }
-        .pat-modal-head {
-          padding: 14px;
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 12px;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.10);
         }
         .pat-modal-title {
-          font-size: 16px;
           font-weight: 900;
+          font-size: 18px;
         }
-        .pat-form {
+        .pat-modal-subtitle {
+          font-size: 12px;
+          opacity: 0.75;
+          margin-top: 2px;
+        }
+        .pat-modal-body {
           padding: 14px;
+        }
+        .pat-form-grid {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 12px;
         }
-        .pat-field {
-          display: grid;
-          gap: 6px;
-          font-size: 12px;
-          opacity: 0.95;
-        }
-        .pat-field-full {
-          grid-column: 1 / -1;
-        }
-        .pat-field input,
-        .pat-field select {
-          width: 100%;
-          padding: 10px 12px;
-          border-radius: 12px;
-          border: 1px solid rgba(255, 255, 255, 0.14);
-          background: rgba(255, 255, 255, 0.08);
-          color: inherit;
-          outline: none;
-        }
-        .pat-field input:focus,
-        .pat-field select:focus {
-          border-color: rgba(120, 255, 170, 0.45);
-        }
-        .pat-modal-actions {
-          padding: 14px;
+        .pat-modal-footer {
           display: flex;
           justify-content: flex-end;
           gap: 10px;
-          border-top: 1px solid rgba(255, 255, 255, 0.10);
+          padding: 14px;
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        @media (max-width: 980px) {
+          .pat-grid {
+            grid-template-columns: 1fr;
+          }
+          .pat-filters {
+            grid-template-columns: 1fr;
+          }
+          .pat-field-wide {
+            grid-column: span 1;
+          }
+          .pat-form-grid {
+            grid-template-columns: 1fr;
+          }
         }
       `}</style>
     </main>
