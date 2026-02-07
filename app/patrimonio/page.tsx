@@ -1,243 +1,551 @@
-// app/patrimonio/page.tsx
-"use client";
+'use client';
 
-import { useMemo, useState } from "react";
+import { useMemo, useState } from 'react';
+
+type AssetType = 'Máquina' | 'Veículo' | 'Implemento' | 'Imóvel' | 'Outros';
 
 type Asset = {
   id: string;
   nome: string;
-  categoria: string; // Ex.: "Trator", "Implemento", "Veículo"
-  status: "Ativo" | "Manutenção" | "Vendido";
-  valorAquisicao: number; // R$
+  tipo: AssetType;
+  valorAquisicao: number;
   dataAquisicao: string; // yyyy-mm-dd
+  observacao?: string;
 };
 
-function brl(v: number) {
-  return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+function moneyBRL(value: number) {
+  return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-function monthLabel(date: Date) {
-  return date.toLocaleDateString("pt-BR", { month: "short", year: "numeric" }).replace(".", "").toUpperCase();
-}
-
-function toIsoDate(d: Date) {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function uid() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 export default function PatrimonioPage() {
-  // Exemplo de dados (depois ligamos no banco / Supabase)
-  const [assets, setAssets] = useState<Asset[]>([
-    { id: "1", nome: "Trator John Deere 5078E", categoria: "Trator", status: "Ativo", valorAquisicao: 265000, dataAquisicao: "2024-06-10" },
-    { id: "2", nome: "Pulverizador 600L", categoria: "Implemento", status: "Manutenção", valorAquisicao: 18000, dataAquisicao: "2023-11-15" },
-    { id: "3", nome: "Caminhonete", categoria: "Veículo", status: "Ativo", valorAquisicao: 145000, dataAquisicao: "2022-02-02" },
+  // Dados iniciais (depois vamos trocar por API/banco)
+  const [items, setItems] = useState<Asset[]>([
+    {
+      id: uid(),
+      nome: 'Trator 4x4',
+      tipo: 'Máquina',
+      valorAquisicao: 280000,
+      dataAquisicao: '2024-05-10',
+      observacao: 'Revisão em dia',
+    },
+    {
+      id: uid(),
+      nome: 'Pulverizador 600L',
+      tipo: 'Implemento',
+      valorAquisicao: 45000,
+      dataAquisicao: '2023-09-18',
+    },
   ]);
 
-  const [q, setQ] = useState("");
-  const [farmName, setFarmName] = useState("fazenda Cachoeira");
+  const [modalOpen, setModalOpen] = useState(false);
 
-  // período (como no print: Jan -> Jun)
-  const [periodStart, setPeriodStart] = useState(() => {
-    const d = new Date();
-    d.setMonth(0); // janeiro
-    d.setDate(1);
-    return d;
-  });
-  const [periodMonths, setPeriodMonths] = useState(6);
+  const [nome, setNome] = useState('');
+  const [tipo, setTipo] = useState<AssetType>('Máquina');
+  const [valorAquisicao, setValorAquisicao] = useState<string>('');
+  const [dataAquisicao, setDataAquisicao] = useState<string>('');
+  const [observacao, setObservacao] = useState<string>('');
 
-  const periodEnd = useMemo(() => {
-    const d = new Date(periodStart);
-    d.setMonth(d.getMonth() + periodMonths);
-    d.setDate(0); // último dia do mês anterior (fim do range)
-    return d;
-  }, [periodStart, periodMonths]);
+  const metrics = useMemo(() => {
+    const totalItens = items.length;
+    const totalAquisicao = items.reduce((acc, it) => acc + (it.valorAquisicao || 0), 0);
 
-  const filteredAssets = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return assets;
-    return assets.filter((a) =>
-      [a.nome, a.categoria, a.status].some((x) => x.toLowerCase().includes(term))
-    );
-  }, [assets, q]);
+    const porTipo = items.reduce<Record<string, number>>((acc, it) => {
+      acc[it.tipo] = (acc[it.tipo] || 0) + 1;
+      return acc;
+    }, {});
 
-  const totalItens = filteredAssets.length;
-  const totalAquisicao = filteredAssets.reduce((acc, a) => acc + a.valorAquisicao, 0);
+    const topTipo = Object.entries(porTipo).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—';
 
-  // Placeholder de métricas do período (no futuro vem do Financeiro/Manutenção)
-  const workedAlq = 0;
-  const gastoManutencoes = 0;
-  const contas = 0;
-  const custosTotais = 0;
+    return { totalItens, totalAquisicao, topTipo };
+  }, [items]);
 
-  function prevPeriod() {
-    const d = new Date(periodStart);
-    d.setMonth(d.getMonth() - periodMonths);
-    setPeriodStart(d);
+  function resetForm() {
+    setNome('');
+    setTipo('Máquina');
+    setValorAquisicao('');
+    setDataAquisicao('');
+    setObservacao('');
   }
 
-  function nextPeriod() {
-    const d = new Date(periodStart);
-    d.setMonth(d.getMonth() + periodMonths);
-    setPeriodStart(d);
-  }
+  function addItem() {
+    const v = Number(String(valorAquisicao).replace(/\./g, '').replace(',', '.'));
+    if (!nome.trim()) return alert('Informe o nome do item.');
+    if (!dataAquisicao) return alert('Informe a data de aquisição.');
+    if (!Number.isFinite(v) || v <= 0) return alert('Informe um valor de aquisição válido.');
 
-  function addFakeAsset() {
-    const now = new Date();
-    const id = String(Date.now());
-    const novo: Asset = {
-      id,
-      nome: `Novo item ${assets.length + 1}`,
-      categoria: "Outro",
-      status: "Ativo",
-      valorAquisicao: 0,
-      dataAquisicao: toIsoDate(now),
+    const newItem: Asset = {
+      id: uid(),
+      nome: nome.trim(),
+      tipo,
+      valorAquisicao: v,
+      dataAquisicao,
+      observacao: observacao.trim() ? observacao.trim() : undefined,
     };
-    setAssets((p) => [novo, ...p]);
+
+    setItems((prev) => [newItem, ...prev]);
+    setModalOpen(false);
+    resetForm();
+  }
+
+  function removeItem(id: string) {
+    if (!confirm('Remover este item do patrimônio?')) return;
+    setItems((prev) => prev.filter((x) => x.id !== id));
   }
 
   return (
-    <main className="pat-shell">
-      {/* Topo (barra verde + seletor fazenda) */}
+    <main className="pat-wrap">
+      {/* Barra superior (estilo “seção” da imagem) */}
       <div className="pat-topbar">
-        <div className="pat-topbar-inner">
-          <div className="pat-logo">a</div>
-
-          <div className="pat-farm-select">
-            <span className="pat-farm-name">{farmName}</span>
-            <button className="pat-farm-btn" type="button" onClick={() => setFarmName(farmName === "fazenda Cachoeira" ? "fazenda Primavera" : "fazenda Cachoeira")}>
-              ▾
-            </button>
-          </div>
-
-          <div className="pat-top-actions">
-            <span className="pat-expire">Seu teste expira em 7 dia(s)</span>
-            <button className="pat-icon-btn" title="Ajuda" type="button">?</button>
-            <button className="pat-icon-btn" title="Usuário" type="button">M</button>
-          </div>
+        <div className="pat-topbar-left">
+          <div className="pat-title">Patrimônio</div>
+          <div className="pat-subtitle">Controle de bens e equipamentos da fazenda</div>
         </div>
+
+        <button className="pat-btn pat-btn-primary" onClick={() => setModalOpen(true)}>
+          + Adicionar
+        </button>
       </div>
 
-      {/* Linha de módulos (como no print: Início, Mapa, Equipe...) */}
-      <div className="pat-modules">
-        <div className="pat-modules-inner">
-          {["Início", "Mapa", "Equipe", "Áreas", "Safras", "Patrimônio", "Financeiro", "Fiscal"].map((m) => (
-            <div key={m} className={"pat-mod " + (m === "Patrimônio" ? "active" : "")}>
-              {m}
+      {/* Cards métricas */}
+      <section className="pat-grid">
+        <div className="pat-card">
+          <div className="pat-card-head">
+            <div className="pat-icon">🚜</div>
+            <div>
+              <div className="pat-metric-label">Patrimônio</div>
+              <div className="pat-metric-value">{metrics.totalItens} itens</div>
             </div>
-          ))}
+          </div>
+          <div className="pat-muted">Total de bens cadastrados</div>
         </div>
-      </div>
 
-      {/* Banner */}
-      <div className="pat-banner">
-        <div className="pat-banner-inner">
-          <span>💎 Deixe o cálculo dos seus custos de produção por nossa conta!</span>
-          <button className="pat-banner-btn" type="button">ATIVAR</button>
+        <div className="pat-card">
+          <div className="pat-card-head">
+            <div className="pat-icon">💰</div>
+            <div>
+              <div className="pat-metric-label">Valor de aquisição</div>
+              <div className="pat-metric-value">{moneyBRL(metrics.totalAquisicao)}</div>
+            </div>
+          </div>
+          <div className="pat-muted">Soma dos valores de compra</div>
         </div>
-      </div>
 
-      {/* Conteúdo */}
-      <div className="pat-content">
-        {/* Sidebar busca */}
-        <aside className="pat-sidebar">
-          <div className="pat-search">
-            <input
-              className="pat-search-input"
-              placeholder="Pesquisar patrimônio..."
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
+        <div className="pat-card">
+          <div className="pat-card-head">
+            <div className="pat-icon">📌</div>
+            <div>
+              <div className="pat-metric-label">Tipo mais comum</div>
+              <div className="pat-metric-value">{metrics.topTipo}</div>
+            </div>
           </div>
+          <div className="pat-muted">Ajuda a entender o perfil</div>
+        </div>
+      </section>
 
-          <div className="pat-sidebar-actions">
-            <button className="pat-side-btn" type="button" onClick={() => setQ("")}>
-              Limpar busca
-            </button>
+      {/* Lista */}
+      <section className="pat-panel">
+        <div className="pat-panel-head">
+          <div className="pat-panel-title">Itens cadastrados</div>
+
+          <div className="pat-hint">
+            Dica: depois vamos ligar isso ao banco para ficar 100% funcional.
           </div>
+        </div>
 
-          <div className="pat-sidebar-list">
-            {filteredAssets.map((a) => (
-              <div key={a.id} className="pat-asset-item">
-                <div className="pat-asset-title">{a.nome}</div>
-                <div className="pat-asset-sub">
-                  {a.categoria} • {a.status} • {brl(a.valorAquisicao)}
-                </div>
-              </div>
-            ))}
-            {!filteredAssets.length && <div className="pat-empty">Nenhum item encontrado.</div>}
-          </div>
-        </aside>
+        <div className="pat-table-wrap">
+          <table className="pat-table">
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Tipo</th>
+                <th>Data</th>
+                <th className="right">Valor</th>
+                <th className="right">Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="pat-empty">
+                    Nenhum item cadastrado ainda.
+                  </td>
+                </tr>
+              ) : (
+                items.map((it) => (
+                  <tr key={it.id}>
+                    <td>
+                      <div className="pat-item-name">{it.nome}</div>
+                      {it.observacao ? <div className="pat-item-sub">{it.observacao}</div> : null}
+                    </td>
+                    <td>
+                      <span className="pat-badge">{it.tipo}</span>
+                    </td>
+                    <td>{new Date(it.dataAquisicao + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
+                    <td className="right">{moneyBRL(it.valorAquisicao)}</td>
+                    <td className="right">
+                      <button className="pat-btn pat-btn-ghost" onClick={() => removeItem(it.id)}>
+                        Remover
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-        {/* Main cards */}
-        <section className="pat-main">
-          <div className="pat-card pat-card-main">
-            <div className="pat-card-head">
-              <div className="pat-card-icon">🚜</div>
+      {/* Modal */}
+      {modalOpen && (
+        <div className="pat-modal-backdrop" onMouseDown={() => setModalOpen(false)}>
+          <div className="pat-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="pat-modal-head">
               <div>
-                <div className="pat-card-kicker">Patrimônio</div>
-                <div className="pat-card-title">
-                  <strong>{totalItens}</strong> itens
-                </div>
+                <div className="pat-modal-title">Adicionar item</div>
+                <div className="pat-muted">Cadastre um bem do patrimônio da fazenda</div>
               </div>
-              <div className="pat-card-right">
-                <div className="pat-card-muted">Valor de aquisição</div>
-                <div className="pat-card-value">{brl(totalAquisicao)}</div>
-              </div>
+              <button className="pat-btn pat-btn-ghost" onClick={() => setModalOpen(false)}>
+                Fechar
+              </button>
             </div>
 
-            <div className="pat-divider" />
+            <div className="pat-form">
+              <label className="pat-field">
+                <span>Nome do item</span>
+                <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex: Trator John Deere" />
+              </label>
 
-            <div className="pat-section-title">CUSTOS NO PERÍODO</div>
-
-            <div className="pat-period-row">
-              <button className="pat-period-btn" onClick={prevPeriod} type="button">‹</button>
-              <div className="pat-period-label">
-                {monthLabel(periodStart)} — {monthLabel(periodEnd)}
-              </div>
-              <button className="pat-period-btn" onClick={nextPeriod} type="button">›</button>
-
-              <div className="pat-period-spacer" />
-
-              <label className="pat-select">
-                <span>Janela</span>
-                <select value={periodMonths} onChange={(e) => setPeriodMonths(Number(e.target.value))}>
-                  <option value={1}>1 mês</option>
-                  <option value={3}>3 meses</option>
-                  <option value={6}>6 meses</option>
-                  <option value={12}>12 meses</option>
+              <label className="pat-field">
+                <span>Tipo</span>
+                <select value={tipo} onChange={(e) => setTipo(e.target.value as AssetType)}>
+                  <option>Máquina</option>
+                  <option>Veículo</option>
+                  <option>Implemento</option>
+                  <option>Imóvel</option>
+                  <option>Outros</option>
                 </select>
+              </label>
+
+              <label className="pat-field">
+                <span>Valor de aquisição (R$)</span>
+                <input
+                  value={valorAquisicao}
+                  onChange={(e) => setValorAquisicao(e.target.value)}
+                  placeholder="Ex: 280000"
+                  inputMode="decimal"
+                />
+              </label>
+
+              <label className="pat-field">
+                <span>Data de aquisição</span>
+                <input value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} type="date" />
+              </label>
+
+              <label className="pat-field pat-field-full">
+                <span>Observação (opcional)</span>
+                <input value={observacao} onChange={(e) => setObservacao(e.target.value)} placeholder="Ex: Manutenção em dia" />
               </label>
             </div>
 
-            <div className="pat-metrics">
-              <div className="pat-metric">
-                <div className="pat-metric-label">Trabalhados</div>
-                <div className="pat-metric-value">{workedAlq.toFixed(2)} alq</div>
-              </div>
+            <div className="pat-modal-actions">
+              <button
+                className="pat-btn pat-btn-ghost"
+                onClick={() => {
+                  resetForm();
+                  setModalOpen(false);
+                }}
+              >
+                Cancelar
+              </button>
 
-              <div className="pat-metric">
-                <div className="pat-metric-label">Gastos em manutenções</div>
-                <div className="pat-metric-value">{brl(gastoManutencoes)}</div>
-              </div>
-
-              <div className="pat-metric">
-                <div className="pat-metric-label">Contas</div>
-                <div className="pat-metric-value">{brl(contas)}</div>
-              </div>
-
-              <div className="pat-metric">
-                <div className="pat-metric-label">Custos totais</div>
-                <div className="pat-metric-value">{brl(custosTotais)}</div>
-              </div>
+              <button className="pat-btn pat-btn-primary" onClick={addItem}>
+                Salvar
+              </button>
             </div>
           </div>
-        </section>
-      </div>
+        </div>
+      )}
 
-      {/* Botão flutuante + */}
-      <button className="pat-fab" type="button" onClick={addFakeAsset} title="Adicionar item">
-        +
-      </button>
+      {/* CSS local (não depende de Tailwind) */}
+      <style jsx>{`
+        .pat-wrap {
+          padding: 18px;
+          max-width: 1100px;
+          margin: 0 auto;
+        }
+
+        .pat-topbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 14px 14px;
+          border-radius: 16px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          backdrop-filter: blur(8px);
+          margin-bottom: 14px;
+        }
+
+        .pat-title {
+          font-size: 22px;
+          font-weight: 900;
+          letter-spacing: 0.2px;
+        }
+
+        .pat-subtitle {
+          opacity: 0.85;
+          font-size: 13px;
+          margin-top: 2px;
+        }
+
+        .pat-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 12px;
+          margin-bottom: 12px;
+        }
+
+        @media (max-width: 980px) {
+          .pat-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        .pat-card {
+          border-radius: 16px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          padding: 14px;
+        }
+
+        .pat-card-head {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          margin-bottom: 8px;
+        }
+
+        .pat-icon {
+          width: 40px;
+          height: 40px;
+          border-radius: 12px;
+          display: grid;
+          place-items: center;
+          background: rgba(255, 255, 255, 0.10);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          font-size: 18px;
+        }
+
+        .pat-metric-label {
+          font-size: 12px;
+          opacity: 0.85;
+        }
+
+        .pat-metric-value {
+          font-size: 18px;
+          font-weight: 900;
+          margin-top: 2px;
+        }
+
+        .pat-muted {
+          font-size: 12px;
+          opacity: 0.80;
+        }
+
+        .pat-panel {
+          border-radius: 16px;
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          overflow: hidden;
+        }
+
+        .pat-panel-head {
+          padding: 14px;
+          display: flex;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 12px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+        }
+
+        .pat-panel-title {
+          font-size: 16px;
+          font-weight: 900;
+        }
+
+        .pat-hint {
+          font-size: 12px;
+          opacity: 0.80;
+        }
+
+        .pat-table-wrap {
+          overflow: auto;
+        }
+
+        .pat-table {
+          width: 100%;
+          border-collapse: collapse;
+          min-width: 720px;
+        }
+
+        .pat-table th,
+        .pat-table td {
+          padding: 12px 14px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          vertical-align: top;
+        }
+
+        .pat-table th {
+          text-align: left;
+          font-size: 12px;
+          opacity: 0.85;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+
+        .right {
+          text-align: right;
+        }
+
+        .pat-item-name {
+          font-weight: 900;
+        }
+
+        .pat-item-sub {
+          font-size: 12px;
+          opacity: 0.85;
+          margin-top: 2px;
+        }
+
+        .pat-badge {
+          display: inline-flex;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          background: rgba(255, 255, 255, 0.10);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          white-space: nowrap;
+        }
+
+        .pat-empty {
+          padding: 22px 14px;
+          opacity: 0.85;
+        }
+
+        .pat-btn {
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          background: rgba(255, 255, 255, 0.08);
+          color: inherit;
+          border-radius: 12px;
+          padding: 9px 12px;
+          font-weight: 800;
+          cursor: pointer;
+          transition: transform 120ms ease, background 120ms ease;
+        }
+
+        .pat-btn:hover {
+          background: rgba(255, 255, 255, 0.12);
+          transform: translateY(-1px);
+        }
+
+        .pat-btn:active {
+          transform: translateY(0px);
+        }
+
+        .pat-btn-primary {
+          background: rgba(80, 220, 120, 0.20);
+          border-color: rgba(80, 220, 120, 0.35);
+        }
+
+        .pat-btn-primary:hover {
+          background: rgba(80, 220, 120, 0.26);
+        }
+
+        .pat-btn-ghost {
+          background: transparent;
+        }
+
+        .pat-modal-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.55);
+          display: grid;
+          place-items: center;
+          padding: 16px;
+          z-index: 50;
+        }
+
+        .pat-modal {
+          width: 100%;
+          max-width: 720px;
+          border-radius: 18px;
+          background: rgba(15, 30, 18, 0.92);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          backdrop-filter: blur(10px);
+          overflow: hidden;
+        }
+
+        .pat-modal-head {
+          padding: 14px;
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+        }
+
+        .pat-modal-title {
+          font-size: 16px;
+          font-weight: 900;
+        }
+
+        .pat-form {
+          padding: 14px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+        }
+
+        .pat-field {
+          display: grid;
+          gap: 6px;
+          font-size: 12px;
+          opacity: 0.95;
+        }
+
+        .pat-field-full {
+          grid-column: 1 / -1;
+        }
+
+        .pat-field input,
+        .pat-field select {
+          width: 100%;
+          padding: 10px 12px;
+          border-radius: 12px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(255, 255, 255, 0.08);
+          color: inherit;
+          outline: none;
+        }
+
+        .pat-field input:focus,
+        .pat-field select:focus {
+          border-color: rgba(120, 255, 170, 0.45);
+        }
+
+        .pat-modal-actions {
+          padding: 14px;
+          display: flex;
+          justify-content: flex-end;
+          gap: 10px;
+          border-top: 1px solid rgba(255, 255, 255, 0.10);
+        }
+      `}</style>
     </main>
   );
 }
