@@ -12,13 +12,16 @@ const menu = [
   { label: 'Peixe', href: '/peixe' },
   { label: 'Soja', href: '/soja' },
   { label: 'Outros', href: '/outros' },
+{ label: 'Clima', href: '/clima' },
 ];
 
-export default function TopMenu() {
+
+export default function TopMenu(){
   const pathname = usePathname();
 
   return (
-    <div className="top-menu">
+    <div className="top-menu flex gap-2 overflow-x-auto whitespace-nowrap">
+
       {menu.map((item) => (
         <Link
           key={item.href}
