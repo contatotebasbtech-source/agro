@@ -11,8 +11,10 @@ const menu = [
   { label: 'Milho', href: '/milho' },
   { label: 'Peixe', href: '/peixe' },
   { label: 'Soja', href: '/soja' },
+  { label: "Patrimônio", href: "/patrimonio" },
+
   { label: 'Outros', href: '/outros' },
-{ label: 'Clima', href: '/clima' },
+
 ];
 
 
