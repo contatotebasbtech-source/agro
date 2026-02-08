@@ -11,6 +11,14 @@ type CategoriaKey =
   | "Ferramentas"
   | "Outros";
 
+type StatusKey = "Ativo" | "Manutencao" | "Vendido";
+
+const STATUS: { key: StatusKey; label: string }[] = [
+  { key: "Ativo", label: "Ativo" },
+  { key: "Manutencao", label: "Em manutenção" },
+  { key: "Vendido", label: "Vendido" },
+];
+
 const CATEGORIAS: { key: CategoriaKey; label: string }[] = [
   { key: "Maquinas", label: "Máquinas" },
   { key: "Veiculos", label: "Veículos" },
@@ -104,15 +112,20 @@ const SUBTIPOS: Record<CategoriaKey, string[]> = {
 type PatrimonioItem = {
   id: string;
   nome: string;
-  categoria?: CategoriaKey; // itens antigos podem não ter
-  tipo: string; // agora é o subtipo
+  categoria?: CategoriaKey; // compat antigo
+  tipo: string; // subtipo OU personalizado
+  tipoCustom?: string; // se preenchido, usa ele
+  marca?: string;
+  modelo?: string;
+  status?: StatusKey; // compat antigo
   valorAquisicao?: number;
   dataAquisicao?: string; // YYYY-MM-DD
   observacao?: string;
   createdAt: string; // ISO
+  updatedAt?: string; // ISO
 };
 
-const LS_KEY = "patrimonio_items_v1";
+const LS_KEY = "patrimonio_items_v2";
 
 function formatBRL(v: number) {
   try {
@@ -124,7 +137,6 @@ function formatBRL(v: number) {
 
 function formatDateBR(iso?: string) {
   if (!iso) return "—";
-  // iso esperado YYYY-MM-DD
   const [y, m, d] = iso.split("-");
   if (!y || !m || !d) return iso;
   return `${d}/${m}/${y}`;
@@ -134,15 +146,45 @@ function uid() {
   return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+function normalizeItem(it: any): PatrimonioItem {
+  const categoria = (it?.categoria ?? "Maquinas") as CategoriaKey;
+  const status = (it?.status ?? "Ativo") as StatusKey;
+  const tipoCustom = typeof it?.tipoCustom === "string" ? it.tipoCustom : undefined;
+  return {
+    id: String(it?.id ?? uid()),
+    nome: String(it?.nome ?? ""),
+    categoria,
+    tipo: String(it?.tipo ?? SUBTIPOS[categoria]?.[0] ?? "Outros"),
+    tipoCustom,
+    marca: typeof it?.marca === "string" ? it.marca : undefined,
+    modelo: typeof it?.modelo === "string" ? it.modelo : undefined,
+    status,
+    valorAquisicao:
+      typeof it?.valorAquisicao === "number" ? it.valorAquisicao : undefined,
+    dataAquisicao: typeof it?.dataAquisicao === "string" ? it.dataAquisicao : undefined,
+    observacao: typeof it?.observacao === "string" ? it.observacao : undefined,
+    createdAt: typeof it?.createdAt === "string" ? it.createdAt : new Date().toISOString(),
+    updatedAt: typeof it?.updatedAt === "string" ? it.updatedAt : undefined,
+  };
+}
+
 export default function PatrimonioPage() {
   const [items, setItems] = useState<PatrimonioItem[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
+
+  // edição
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   // Form
   const [form, setForm] = useState({
     nome: "",
     categoria: "Maquinas" as CategoriaKey,
     tipo: SUBTIPOS.Maquinas[0],
+    usarTipoCustom: false,
+    tipoCustom: "",
+    marca: "",
+    modelo: "",
+    status: "Ativo" as StatusKey,
     valorAquisicao: "",
     dataAquisicao: "",
     observacao: "",
@@ -151,16 +193,30 @@ export default function PatrimonioPage() {
   // Filtros
   const [fCategoria, setFCategoria] = useState<CategoriaKey | "Todas">("Todas");
   const [fTipo, setFTipo] = useState<string>("Todos");
+  const [fStatus, setFStatus] = useState<StatusKey | "Todos">("Todos");
   const [search, setSearch] = useState("");
 
   // Load
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        setItems(parsed);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setItems(parsed.map(normalizeItem));
+          return;
+        }
+      }
+
+      // fallback: pegar v1 se existir
+      const rawV1 = localStorage.getItem("patrimonio_items_v1");
+      if (rawV1) {
+        const parsedV1 = JSON.parse(rawV1);
+        if (Array.isArray(parsedV1)) {
+          const migrated = parsedV1.map((x: any) => normalizeItem(x));
+          setItems(migrated);
+          localStorage.setItem(LS_KEY, JSON.stringify(migrated));
+        }
       }
     } catch {
       // ignore
@@ -177,6 +233,7 @@ export default function PatrimonioPage() {
   }, [items]);
 
   const totalItens = items.length;
+
   const totalValor = useMemo(() => {
     return items.reduce((acc, it) => acc + (it.valorAquisicao ?? 0), 0);
   }, [items]);
@@ -190,23 +247,49 @@ export default function PatrimonioPage() {
     const s = search.trim().toLowerCase();
 
     return items
-      .map((it) => ({
-        ...it,
-        categoria: (it.categoria ?? "Maquinas") as CategoriaKey,
-      }))
+      .map((it) => normalizeItem(it))
       .filter((it) => {
         if (fCategoria !== "Todas" && it.categoria !== fCategoria) return false;
-        if (fTipo !== "Todos" && it.tipo !== fTipo) return false;
+
+        const tipoFinal = (it.tipoCustom?.trim() ? it.tipoCustom : it.tipo) || "";
+        if (fTipo !== "Todos" && tipoFinal !== fTipo) return false;
+
+        if (fStatus !== "Todos" && (it.status ?? "Ativo") !== fStatus) return false;
+
         if (s) {
-          const hay = `${it.nome} ${it.tipo} ${it.observacao ?? ""}`.toLowerCase();
+          const hay = `${it.nome} ${tipoFinal} ${it.marca ?? ""} ${it.modelo ?? ""} ${
+            it.observacao ?? ""
+          }`.toLowerCase();
           if (!hay.includes(s)) return false;
         }
         return true;
       })
-      .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-  }, [items, fCategoria, fTipo, search]);
+      .sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt));
+  }, [items, fCategoria, fTipo, fStatus, search]);
 
-  function abrirModal() {
+  function abrirModalNovo() {
+    setEditingId(null);
+    limparForm();
+    setModalOpen(true);
+  }
+
+  function abrirModalEditar(it: PatrimonioItem) {
+    const n = normalizeItem(it);
+    const tipoCustom = (n.tipoCustom ?? "").trim();
+    setEditingId(n.id);
+    setForm({
+      nome: n.nome ?? "",
+      categoria: (n.categoria ?? "Maquinas") as CategoriaKey,
+      tipo: n.tipo ?? SUBTIPOS.Maquinas[0],
+      usarTipoCustom: !!tipoCustom,
+      tipoCustom: tipoCustom,
+      marca: n.marca ?? "",
+      modelo: n.modelo ?? "",
+      status: (n.status ?? "Ativo") as StatusKey,
+      valorAquisicao: n.valorAquisicao != null ? String(n.valorAquisicao) : "",
+      dataAquisicao: n.dataAquisicao ?? "",
+      observacao: n.observacao ?? "",
+    });
     setModalOpen(true);
   }
 
@@ -219,10 +302,23 @@ export default function PatrimonioPage() {
       nome: "",
       categoria: "Maquinas",
       tipo: SUBTIPOS.Maquinas[0],
+      usarTipoCustom: false,
+      tipoCustom: "",
+      marca: "",
+      modelo: "",
+      status: "Ativo",
       valorAquisicao: "",
       dataAquisicao: "",
       observacao: "",
     });
+  }
+
+  function tipoFinalFromForm() {
+    if (form.usarTipoCustom) {
+      const t = form.tipoCustom.trim();
+      return t ? t : form.tipo;
+    }
+    return form.tipo;
   }
 
   function salvarItem() {
@@ -232,30 +328,62 @@ export default function PatrimonioPage() {
       return;
     }
 
+    const valorTxt = form.valorAquisicao.trim();
     const valorNum =
-      form.valorAquisicao.trim() === ""
-        ? undefined
-        : Number(form.valorAquisicao.replace(",", "."));
+      valorTxt === "" ? undefined : Number(valorTxt.replace(",", ".").replace(/\s/g, ""));
 
     if (valorNum !== undefined && Number.isNaN(valorNum)) {
       alert("Valor de aquisição inválido.");
       return;
     }
 
-    const novo: PatrimonioItem = {
-      id: uid(),
-      nome,
-      categoria: form.categoria,
-      tipo: form.tipo,
-      valorAquisicao: valorNum,
-      dataAquisicao: form.dataAquisicao || undefined,
-      observacao: form.observacao.trim() || undefined,
-      createdAt: new Date().toISOString(),
-    };
+    const nowIso = new Date().toISOString();
+    const tipoFinal = tipoFinalFromForm();
 
-    setItems((prev) => [novo, ...prev]);
+    if (editingId) {
+      setItems((prev) =>
+        prev.map((x) => {
+          if (x.id !== editingId) return x;
+          const base = normalizeItem(x);
+          const updated: PatrimonioItem = {
+            ...base,
+            nome,
+            categoria: form.categoria,
+            tipo: form.tipo,
+            tipoCustom: form.usarTipoCustom && form.tipoCustom.trim() ? form.tipoCustom.trim() : undefined,
+            marca: form.marca.trim() || undefined,
+            modelo: form.modelo.trim() || undefined,
+            status: form.status,
+            valorAquisicao: valorNum,
+            dataAquisicao: form.dataAquisicao || undefined,
+            observacao: form.observacao.trim() || undefined,
+            updatedAt: nowIso,
+          };
+          return updated;
+        })
+      );
+    } else {
+      const novo: PatrimonioItem = {
+        id: uid(),
+        nome,
+        categoria: form.categoria,
+        tipo: form.tipo,
+        tipoCustom: form.usarTipoCustom && form.tipoCustom.trim() ? form.tipoCustom.trim() : undefined,
+        marca: form.marca.trim() || undefined,
+        modelo: form.modelo.trim() || undefined,
+        status: form.status,
+        valorAquisicao: valorNum,
+        dataAquisicao: form.dataAquisicao || undefined,
+        observacao: form.observacao.trim() || undefined,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      setItems((prev) => [novo, ...prev]);
+    }
+
     fecharModal();
     limparForm();
+    setEditingId(null);
   }
 
   function excluirItem(id: string) {
@@ -266,7 +394,13 @@ export default function PatrimonioPage() {
   function limparFiltros() {
     setFCategoria("Todas");
     setFTipo("Todos");
+    setFStatus("Todos");
     setSearch("");
+  }
+
+  function statusLabel(s?: StatusKey) {
+    const k = (s ?? "Ativo") as StatusKey;
+    return STATUS.find((x) => x.key === k)?.label ?? "Ativo";
   }
 
   return (
@@ -280,7 +414,7 @@ export default function PatrimonioPage() {
           </div>
 
           <div className="pat-header-actions">
-            <button className="pat-btn pat-btn-primary" onClick={abrirModal}>
+            <button className="pat-btn pat-btn-primary" onClick={abrirModalNovo}>
               + Adicionar
             </button>
           </div>
@@ -303,10 +437,10 @@ export default function PatrimonioPage() {
           <div className="pat-card pat-metric">
             <div className="pat-metric-label">Dica</div>
             <div className="pat-metric-value" style={{ fontSize: 16 }}>
-              Filtros rápidos
+              Busca + Filtros
             </div>
             <div className="pat-metric-hint">
-              Use Categoria / Tipo / Busca para encontrar máquinas rápido.
+              Filtre por Categoria/Tipo/Status e pesquise por nome, marca ou modelo.
             </div>
           </div>
         </div>
@@ -324,7 +458,6 @@ export default function PatrimonioPage() {
                   onChange={(e) => {
                     const val = e.target.value as any;
                     setFCategoria(val);
-                    // ao trocar categoria, resetar tipo
                     setFTipo("Todos");
                   }}
                 >
@@ -348,10 +481,22 @@ export default function PatrimonioPage() {
                 </select>
               </div>
 
+              <div className="pat-field">
+                <label>Status</label>
+                <select value={fStatus} onChange={(e) => setFStatus(e.target.value as any)}>
+                  <option value="Todos">Todos</option>
+                  {STATUS.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="pat-field pat-field-wide">
                 <label>Buscar</label>
                 <input
-                  placeholder="Digite o nome (ex: Trator John Deere)"
+                  placeholder="Digite nome, marca, modelo ou observação"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
@@ -361,7 +506,7 @@ export default function PatrimonioPage() {
                 <button className="pat-btn" onClick={limparFiltros}>
                   Limpar
                 </button>
-                <button className="pat-btn pat-btn-ghost" onClick={abrirModal}>
+                <button className="pat-btn pat-btn-ghost" onClick={abrirModalNovo}>
                   + Adicionar item
                 </button>
               </div>
@@ -386,7 +531,9 @@ export default function PatrimonioPage() {
                       <th>Item</th>
                       <th>Categoria</th>
                       <th>Tipo</th>
-                      <th>Valor (R$)</th>
+                      <th>Marca/Modelo</th>
+                      <th>Status</th>
+                      <th>Valor</th>
                       <th>Data</th>
                       <th>Obs.</th>
                       <th></th>
@@ -395,23 +542,32 @@ export default function PatrimonioPage() {
                   <tbody>
                     {filtrados.map((it) => {
                       const cat = (it.categoria ?? "Maquinas") as CategoriaKey;
-                      const catLabel =
-                        CATEGORIAS.find((c) => c.key === cat)?.label ?? "Máquinas";
+                      const catLabel = CATEGORIAS.find((c) => c.key === cat)?.label ?? "Máquinas";
+                      const tipoFinal = (it.tipoCustom?.trim() ? it.tipoCustom : it.tipo) || "—";
+                      const mm =
+                        it.marca || it.modelo
+                          ? `${it.marca ?? ""}${it.marca && it.modelo ? " / " : ""}${it.modelo ?? ""}`
+                          : "—";
 
                       return (
                         <tr key={it.id}>
                           <td className="pat-td-strong">{it.nome}</td>
                           <td>{catLabel}</td>
-                          <td>{it.tipo}</td>
+                          <td>{tipoFinal}</td>
+                          <td className="pat-td-muted">{mm}</td>
+                          <td>
+                            <span className={`pat-badge pat-badge-${it.status ?? "Ativo"}`}>
+                              {statusLabel(it.status)}
+                            </span>
+                          </td>
                           <td>{it.valorAquisicao != null ? formatBRL(it.valorAquisicao) : "—"}</td>
                           <td>{formatDateBR(it.dataAquisicao)}</td>
                           <td className="pat-td-muted">{it.observacao ?? "—"}</td>
                           <td className="pat-td-actions">
-                            <button
-                              className="pat-btn pat-btn-danger"
-                              onClick={() => excluirItem(it.id)}
-                              title="Excluir"
-                            >
+                            <button className="pat-btn pat-btn-ghost" onClick={() => abrirModalEditar(it)}>
+                              Editar
+                            </button>
+                            <button className="pat-btn pat-btn-danger" onClick={() => excluirItem(it.id)}>
                               Excluir
                             </button>
                           </td>
@@ -432,8 +588,10 @@ export default function PatrimonioPage() {
           <div className="pat-modal" onMouseDown={(e) => e.stopPropagation()}>
             <div className="pat-modal-header">
               <div>
-                <div className="pat-modal-title">Adicionar item</div>
-                <div className="pat-modal-subtitle">Cadastre um bem do patrimônio da fazenda</div>
+                <div className="pat-modal-title">{editingId ? "Editar item" : "Adicionar item"}</div>
+                <div className="pat-modal-subtitle">
+                  {editingId ? "Atualize os dados do patrimônio" : "Cadastre um bem do patrimônio da fazenda"}
+                </div>
               </div>
               <button className="pat-btn" onClick={fecharModal}>
                 Fechar
@@ -458,7 +616,12 @@ export default function PatrimonioPage() {
                     onChange={(e) => {
                       const cat = e.target.value as CategoriaKey;
                       const primeiro = SUBTIPOS[cat]?.[0] ?? "Outros";
-                      setForm((p) => ({ ...p, categoria: cat, tipo: primeiro }));
+                      setForm((p) => ({
+                        ...p,
+                        categoria: cat,
+                        tipo: primeiro,
+                        // se estava com tipo custom, mantém o texto, mas continua valendo o checkbox
+                      }));
                     }}
                   >
                     {CATEGORIAS.map((c) => (
@@ -474,6 +637,8 @@ export default function PatrimonioPage() {
                   <select
                     value={form.tipo}
                     onChange={(e) => setForm((p) => ({ ...p, tipo: e.target.value }))}
+                    disabled={form.usarTipoCustom}
+                    title={form.usarTipoCustom ? "Desative 'Tipo personalizado' para usar a lista" : ""}
                   >
                     {(SUBTIPOS[form.categoria] ?? ["Outros"]).map((s) => (
                       <option key={s} value={s}>
@@ -481,6 +646,55 @@ export default function PatrimonioPage() {
                       </option>
                     ))}
                   </select>
+
+                  <label className="pat-check">
+                    <input
+                      type="checkbox"
+                      checked={form.usarTipoCustom}
+                      onChange={(e) => setForm((p) => ({ ...p, usarTipoCustom: e.target.checked }))}
+                    />
+                    <span>Tipo personalizado</span>
+                  </label>
+
+                  {form.usarTipoCustom && (
+                    <input
+                      placeholder="Digite um tipo (ex: Drone agrícola)"
+                      value={form.tipoCustom}
+                      onChange={(e) => setForm((p) => ({ ...p, tipoCustom: e.target.value }))}
+                    />
+                  )}
+                </div>
+
+                <div className="pat-field">
+                  <label>Status</label>
+                  <select
+                    value={form.status}
+                    onChange={(e) => setForm((p) => ({ ...p, status: e.target.value as StatusKey }))}
+                  >
+                    {STATUS.map((s) => (
+                      <option key={s.key} value={s.key}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="pat-field">
+                  <label>Marca</label>
+                  <input
+                    placeholder="Ex: John Deere / Valtra"
+                    value={form.marca}
+                    onChange={(e) => setForm((p) => ({ ...p, marca: e.target.value }))}
+                  />
+                </div>
+
+                <div className="pat-field">
+                  <label>Modelo</label>
+                  <input
+                    placeholder="Ex: 6130J / BH180"
+                    value={form.modelo}
+                    onChange={(e) => setForm((p) => ({ ...p, modelo: e.target.value }))}
+                  />
                 </div>
 
                 <div className="pat-field">
@@ -518,19 +732,20 @@ export default function PatrimonioPage() {
                 onClick={() => {
                   limparForm();
                   fecharModal();
+                  setEditingId(null);
                 }}
               >
                 Cancelar
               </button>
               <button className="pat-btn pat-btn-primary" onClick={salvarItem}>
-                Salvar
+                {editingId ? "Salvar alterações" : "Salvar"}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* CSS local (não depende do Tailwind) */}
+      {/* CSS local (sem depender do Tailwind) */}
       <style jsx>{`
         .pat-page {
           min-height: calc(100vh - 0px);
@@ -571,6 +786,7 @@ export default function PatrimonioPage() {
           border-radius: 12px;
           cursor: pointer;
           font-weight: 700;
+          white-space: nowrap;
         }
         .pat-btn:hover {
           background: rgba(255, 255, 255, 0.1);
@@ -645,9 +861,11 @@ export default function PatrimonioPage() {
         }
         .pat-field label {
           font-size: 12px;
-          opacity: 0.75;
-          font-weight: 700;
+          opacity: 0.8;
+          font-weight: 800;
         }
+
+        /* >>> AQUI É A COR DO DROPDOWN (select/option) <<< */
         .pat-field input,
         .pat-field select {
           height: 40px;
@@ -655,12 +873,21 @@ export default function PatrimonioPage() {
           border-radius: 12px;
           border: 1px solid rgba(255, 255, 255, 0.14);
           background: rgba(255, 255, 255, 0.06);
-          color: inherit;
+          color: #e8f5ea; /* texto mais claro e visível */
           outline: none;
+        }
+        .pat-field select option {
+          background: #0b2e13; /* fundo do menu */
+          color: #e8f5ea; /* texto do menu bem visível */
+        }
+        .pat-field select:disabled {
+          opacity: 0.7;
+          cursor: not-allowed;
         }
         .pat-field input::placeholder {
           opacity: 0.7;
         }
+
         .pat-field-wide {
           grid-column: span 2;
         }
@@ -668,6 +895,20 @@ export default function PatrimonioPage() {
           display: flex;
           gap: 10px;
           justify-content: flex-end;
+        }
+
+        .pat-check {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-top: 8px;
+          font-size: 12px;
+          opacity: 0.9;
+          font-weight: 700;
+        }
+        .pat-check input {
+          width: 16px;
+          height: 16px;
         }
 
         .pat-empty {
@@ -693,7 +934,7 @@ export default function PatrimonioPage() {
         .pat-table {
           width: 100%;
           border-collapse: collapse;
-          min-width: 900px;
+          min-width: 1100px;
         }
         .pat-table th,
         .pat-table td {
@@ -704,7 +945,7 @@ export default function PatrimonioPage() {
         }
         .pat-table th {
           font-size: 12px;
-          opacity: 0.75;
+          opacity: 0.8;
           font-weight: 900;
           background: rgba(255, 255, 255, 0.03);
         }
@@ -712,14 +953,39 @@ export default function PatrimonioPage() {
           font-weight: 900;
         }
         .pat-td-muted {
-          opacity: 0.8;
-          max-width: 260px;
+          opacity: 0.85;
+          max-width: 240px;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
         .pat-td-actions {
-          text-align: right;
+          display: flex;
+          gap: 8px;
+          justify-content: flex-end;
+        }
+
+        .pat-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 900;
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          background: rgba(255, 255, 255, 0.06);
+        }
+        .pat-badge-Ativo {
+          background: rgba(34, 197, 94, 0.18);
+          border-color: rgba(34, 197, 94, 0.35);
+        }
+        .pat-badge-Manutencao {
+          background: rgba(234, 179, 8, 0.16);
+          border-color: rgba(234, 179, 8, 0.35);
+        }
+        .pat-badge-Vendido {
+          background: rgba(148, 163, 184, 0.16);
+          border-color: rgba(148, 163, 184, 0.35);
         }
 
         .pat-modal-backdrop {
@@ -733,7 +999,7 @@ export default function PatrimonioPage() {
           z-index: 9999;
         }
         .pat-modal {
-          width: min(860px, 100%);
+          width: min(920px, 100%);
           border-radius: 18px;
           background: rgba(10, 22, 14, 0.9);
           border: 1px solid rgba(255, 255, 255, 0.1);
@@ -754,7 +1020,7 @@ export default function PatrimonioPage() {
         }
         .pat-modal-subtitle {
           font-size: 12px;
-          opacity: 0.75;
+          opacity: 0.78;
           margin-top: 2px;
         }
         .pat-modal-body {
@@ -785,6 +1051,10 @@ export default function PatrimonioPage() {
           }
           .pat-form-grid {
             grid-template-columns: 1fr;
+          }
+          .pat-td-actions {
+            flex-direction: column;
+            align-items: flex-end;
           }
         }
       `}</style>
