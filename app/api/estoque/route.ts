@@ -1,148 +1,171 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-function supabaseAdmin() {
-  const url = process.env.SUPABASE_URL;
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+export const runtime = "nodejs";
 
-  if (!url || !service) {
+type EstoqueRow = {
+  id: string;
+  nome: string;
+  categoria: string | null;
+  unidade: string | null;
+  quantidade: number | null;
+  minimo: number | null;
+  valor_unitario: number | null;
+  local: string | null;
+  validade: string | null; // date
+  observacao: string | null;
+  created_at: string;
+};
+
+function getSupabase() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
     throw new Error(
-      "ENV missing: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY (check Vercel env vars)"
+      "Variáveis do Supabase ausentes. Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no ambiente (Vercel -> Settings -> Environment Variables)."
     );
   }
 
-  return createClient(url, service, {
+  return createClient(url, key, {
     auth: { persistSession: false },
   });
 }
 
-const TABLE = "estoque_items";
+function json(data: any, status = 200) {
+  return NextResponse.json(data, { status });
+}
 
-// GET /api/estoque?q=&categoria=&low=1
+function bad(message: string, status = 400) {
+  return json({ error: message }, status);
+}
+
 export async function GET(req: Request) {
   try {
-    const sb = supabaseAdmin();
+    const supabase = getSupabase();
     const { searchParams } = new URL(req.url);
 
     const q = (searchParams.get("q") || "").trim();
     const categoria = (searchParams.get("categoria") || "").trim();
     const low = searchParams.get("low") === "1";
 
-    let query = sb.from(TABLE).select("*").order("created_at", { ascending: false });
+    let query = supabase
+      .from("estoque_items")
+      .select("*")
+      .order("created_at", { ascending: false });
 
-    if (q) query = query.ilike("nome", `%${q}%`);
     if (categoria && categoria !== "Todas") query = query.eq("categoria", categoria);
 
+    if (q) {
+      // busca em campos principais
+      // ilike funciona bem em texto
+      query = query.or(
+        `nome.ilike.%${q}%,categoria.ilike.%${q}%,local.ilike.%${q}%,observacao.ilike.%${q}%`
+      );
+    }
+
     const { data, error } = await query;
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    const items = (data || []).map((it: any) => ({
-      id: it.id,
-      nome: it.nome ?? "",
-      categoria: it.categoria ?? "",
-      unidade: it.unidade ?? "",
-      quantidade: Number(it.quantidade ?? 0),
-      minimo: Number(it.minimo ?? 0),
-      valorUnitario: Number(it.valor_unitario ?? 0),
-      local: it.local ?? "",
-      validade: it.validade ?? null,
-      observacao: it.observacao ?? "",
-      createdAt: it.created_at ?? null,
-    }));
+    if (error) return bad(error.message, 500);
 
-    const abaixoDoMinimo = items.filter((i) => i.quantidade < i.minimo);
-    const totalValor = items.reduce((acc, i) => acc + i.quantidade * i.valorUnitario, 0);
+    let items = (data || []) as EstoqueRow[];
 
-    return NextResponse.json({
-      items: low ? abaixoDoMinimo : items,
-      meta: {
-        total: items.length,
-        abaixoDoMinimo: abaixoDoMinimo.length,
-        totalValor,
-        updatedAt: new Date().toISOString(),
-      },
-    });
+    // filtro "abaixo do mínimo" no servidor (porque pode ter null)
+    if (low) {
+      items = items.filter((i) => (i.quantidade ?? 0) < (i.minimo ?? 0));
+    }
+
+    return json({ items });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "GET error" }, { status: 500 });
+    return bad(e?.message || "Erro no GET /api/estoque", 500);
   }
 }
 
-// POST /api/estoque
 export async function POST(req: Request) {
   try {
-    const sb = supabaseAdmin();
+    const supabase = getSupabase();
     const body = await req.json();
 
     const payload = {
       nome: String(body.nome || "").trim(),
-      categoria: String(body.categoria || "Insumos"),
-      unidade: String(body.unidade || "kg"),
-      quantidade: Number(body.quantidade || 0),
-      minimo: Number(body.minimo || 0),
-      valor_unitario: Number(body.valorUnitario || 0),
-      local: String(body.local || ""),
-      validade: body.validade ? String(body.validade) : null,
-      observacao: String(body.observacao || ""),
+      categoria: body.categoria ?? "Insumos",
+      unidade: body.unidade ?? "kg",
+      quantidade: body.quantidade === "" || body.quantidade == null ? 0 : Number(body.quantidade),
+      minimo: body.minimo === "" || body.minimo == null ? 0 : Number(body.minimo),
+      valor_unitario:
+        body.valorUnitario === "" || body.valorUnitario == null ? 0 : Number(body.valorUnitario),
+      local: body.local ?? "",
+      validade: body.validade || null, // "YYYY-MM-DD" ou null
+      observacao: body.observacao ?? "",
     };
 
-    if (!payload.nome) {
-      return NextResponse.json({ error: "nome é obrigatório" }, { status: 400 });
-    }
+    if (!payload.nome) return bad("Nome do item é obrigatório.");
 
-    const { data, error } = await sb.from(TABLE).insert(payload).select("*").single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    const { data, error } = await supabase
+      .from("estoque_itens")
+      .insert(payload)
+      .select("*")
+      .single();
 
-    return NextResponse.json({ item: data }, { status: 201 });
+    if (error) return bad(error.message, 500);
+
+    return json({ item: data }, 201);
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "POST error" }, { status: 500 });
+    return bad(e?.message || "Erro no POST /api/estoque", 500);
   }
 }
 
-// PATCH /api/estoque?id=UUID
 export async function PATCH(req: Request) {
   try {
-    const sb = supabaseAdmin();
-    const { searchParams } = new URL(req.url);
-    const id = searchParams.get("id");
-
-    if (!id) return NextResponse.json({ error: "id obrigatório" }, { status: 400 });
-
+    const supabase = getSupabase();
     const body = await req.json();
 
-    const payload: any = {};
-    if (body.nome !== undefined) payload.nome = String(body.nome || "").trim();
-    if (body.categoria !== undefined) payload.categoria = String(body.categoria || "");
-    if (body.unidade !== undefined) payload.unidade = String(body.unidade || "");
-    if (body.quantidade !== undefined) payload.quantidade = Number(body.quantidade || 0);
-    if (body.minimo !== undefined) payload.minimo = Number(body.minimo || 0);
-    if (body.valorUnitario !== undefined) payload.valor_unitario = Number(body.valorUnitario || 0);
-    if (body.local !== undefined) payload.local = String(body.local || "");
-    if (body.validade !== undefined) payload.validade = body.validade ? String(body.validade) : null;
-    if (body.observacao !== undefined) payload.observacao = String(body.observacao || "");
+    const id = String(body.id || "").trim();
+    if (!id) return bad("ID é obrigatório.");
 
-    const { data, error } = await sb.from(TABLE).update(payload).eq("id", id).select("*").single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    const payload = {
+      nome: String(body.nome || "").trim(),
+      categoria: body.categoria ?? "Insumos",
+      unidade: body.unidade ?? "kg",
+      quantidade: body.quantidade === "" || body.quantidade == null ? 0 : Number(body.quantidade),
+      minimo: body.minimo === "" || body.minimo == null ? 0 : Number(body.minimo),
+      valor_unitario:
+        body.valorUnitario === "" || body.valorUnitario == null ? 0 : Number(body.valorUnitario),
+      local: body.local ?? "",
+      validade: body.validade || null,
+      observacao: body.observacao ?? "",
+    };
 
-    return NextResponse.json({ item: data });
+    if (!payload.nome) return bad("Nome do item é obrigatório.");
+
+    const { data, error } = await supabase
+      .from("estoque_itens")
+      .update(payload)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error) return bad(error.message, 500);
+
+    return json({ item: data });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "PATCH error" }, { status: 500 });
+    return bad(e?.message || "Erro no PATCH /api/estoque", 500);
   }
 }
 
-// DELETE /api/estoque?id=UUID
 export async function DELETE(req: Request) {
   try {
-    const sb = supabaseAdmin();
+    const supabase = getSupabase();
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get("id");
+    const id = String(searchParams.get("id") || "").trim();
 
-    if (!id) return NextResponse.json({ error: "id obrigatório" }, { status: 400 });
+    if (!id) return bad("ID é obrigatório.");
 
-    const { error } = await sb.from(TABLE).delete().eq("id", id);
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    const { error } = await supabase.from("estoque_items").delete().eq("id", id);
+    if (error) return bad(error.message, 500);
 
-    return NextResponse.json({ ok: true });
+    return json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "DELETE error" }, { status: 500 });
+    return bad(e?.message || "Erro no DELETE /api/estoque", 500);
   }
 }
