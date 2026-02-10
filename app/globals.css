@@ -1182,3 +1182,148 @@ main {
 body > div {
   background: transparent !important;
 }
+/* === FIX dropdown/select (opções brancas e texto ilegível) === */
+.pat-select, .pat-input {
+  color: #e8f1ea;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255,255,255,0.12);
+}
+
+.pat-select option {
+  background: #0b2a16; /* fundo escuro nas opções */
+  color: #e8f1ea;      /* texto claro */
+}
+
+.pat-select:focus, .pat-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(69, 170, 90, 0.25);
+  border-color: rgba(69, 170, 90, 0.45);
+}
+/* ====== LAYOUT PADRÃO (igual Patrimônio) ====== */
+.pat-shell{
+  width: min(1100px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 28px 0 60px;
+  color: #eaffea;
+}
+
+.pat-header{
+  display:flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 22px;
+  border-radius: 18px;
+  background: rgba(0,0,0,.18);
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+}
+
+.pat-title{
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: -1px;
+  line-height: 1;
+}
+
+.pat-subtitle{
+  margin-top: 6px;
+  opacity: .88;
+  font-size: 14px;
+}
+
+.pat-btn{
+  background: #0f3b19;
+  border: 1px solid rgba(255,255,255,.15);
+  color: #eaffea;
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-weight: 700;
+  cursor:pointer;
+}
+.pat-btn:hover{ filter: brightness(1.1); }
+
+.pat-metrics{
+  margin-top: 14px;
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.pat-metric{
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(0,0,0,.16);
+  border: 1px solid rgba(255,255,255,.08);
+}
+.pat-metric-label{ opacity:.75; font-size: 12px; }
+.pat-metric-value{ font-size: 22px; font-weight: 900; margin-top: 6px; }
+.pat-metric-hint{ opacity:.85; font-size: 12px; margin-top: 4px; }
+
+.pat-card{
+  margin-top: 12px;
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(0,0,0,.16);
+  border: 1px solid rgba(255,255,255,.08);
+}
+
+.pat-card-title{
+  font-size: 22px;
+  font-weight: 900;
+  opacity: .35;
+  letter-spacing: .5px;
+}
+
+.pat-form-grid{
+  margin-top: 10px;
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.pat-field label{
+  display:block;
+  font-size: 12px;
+  opacity: .85;
+  margin-bottom: 6px;
+}
+.pat-input, .pat-select{
+  width: 100%;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(0,0,0,.25);
+  border: 1px solid rgba(255,255,255,.12);
+  color: #eaffea;
+  outline: none;
+}
+.pat-input::placeholder{ color: rgba(234,255,234,.55); }
+
+/* IMPORTANTE: dropdown (options) visíveis no tema escuro */
+.pat-select option{
+  background: #0f2a16;
+  color: #eaffea;
+}
+
+/* Linha inferior do filtro (busca + botões) */
+.pat-form-row{
+  margin-top: 12px;
+  display:flex;
+  gap: 12px;
+  align-items: center;
+}
+.pat-form-row .pat-input{ flex: 1; }
+
+.pat-actions{
+  display:flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 980px){
+  .pat-metrics{ grid-template-columns: 1fr; }
+  .pat-form-grid{ grid-template-columns: 1fr; }
+  .pat-form-row{ flex-direction: column; align-items: stretch; }
+  .pat-actions{ justify-content: stretch; }
+  .pat-btn{ width: 100%; }
+}
