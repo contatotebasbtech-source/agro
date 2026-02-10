@@ -3,182 +3,154 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-/* =========================
-   Supabase
-========================= */
-function getSupabase() {
-  const url = process.env.SUPABASE_URL!;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+type EstoqueRow = {
+  id: string;
+  nome: string;
+  categoria: string;
+  local: string | null;
+  unidade: string;
+  quantidade: number;
+  minimo: number;
+  valor_unitario: number;
+  validade: string | null; // YYYY-MM-DD
+  observacao: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function supabaseAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !key) {
-    throw new Error("Supabase env vars missing");
+    throw new Error("ENV missing: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   }
 
-  return createClient(url, key, {
-    auth: { persistSession: false },
-  });
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
-/* =========================
-   GET — listar
-========================= */
+const TABLE = "estoque_itens";
+
+function ok(data: any, status = 200) {
+  return NextResponse.json(data, { status });
+}
+function fail(message: string, status = 400) {
+  return NextResponse.json({ error: message }, { status });
+}
+
 export async function GET(req: Request) {
   try {
-    const supabase = getSupabase();
+    const sb = supabaseAdmin();
     const { searchParams } = new URL(req.url);
 
-    const q = searchParams.get("q");
-    const categoria = searchParams.get("categoria");
+    const q = (searchParams.get("q") || "").trim();
+    const categoria = (searchParams.get("categoria") || "").trim(); // "Todas" ou uma categoria
     const low = searchParams.get("low") === "1";
 
-    let query = supabase
-      .from("estoque")
-      .select("*")
-      .order("created_at", { ascending: false });
+    let query = sb.from(TABLE).select("*").order("created_at", { ascending: false });
 
-    if (categoria && categoria !== "Todas") {
-      query = query.eq("categoria", categoria);
-    }
+    if (categoria && categoria !== "Todas") query = query.eq("categoria", categoria);
 
     if (q) {
+      // busca textual em campos
       query = query.or(
-        `nome.ilike.%${q}%,local.ilike.%${q}%,observacao.ilike.%${q}%`
+        `nome.ilike.%${q}%,categoria.ilike.%${q}%,local.ilike.%${q}%,observacao.ilike.%${q}%`
       );
     }
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) return fail(error.message, 500);
 
-    let items = data ?? [];
+    let items = (data || []) as EstoqueRow[];
 
     if (low) {
-      items = items.filter(
-        (i) => (i.quantidade ?? 0) < (i.minimo ?? 0)
-      );
+      items = items.filter((i) => (i.quantidade ?? 0) < (i.minimo ?? 0));
     }
 
-    return NextResponse.json({ items });
+    return ok({ items });
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e.message },
-      { status: 500 }
-    );
+    return fail(e?.message || "Erro no GET /api/estoque", 500);
   }
 }
 
-/* =========================
-   POST — criar
-========================= */
 export async function POST(req: Request) {
   try {
-    const supabase = getSupabase();
+    const sb = supabaseAdmin();
     const body = await req.json();
 
-    if (!body.nome) {
-      return NextResponse.json(
-        { error: "Nome é obrigatório" },
-        { status: 400 }
-      );
-    }
+    const payload = {
+      nome: String(body.nome || "").trim(),
+      categoria: String(body.categoria || "Produção"),
+      local: String(body.local || "").trim() || null,
+      unidade: String(body.unidade || "kg"),
+      quantidade: Number(body.quantidade ?? 0) || 0,
+      minimo: Number(body.minimo ?? 0) || 0,
+      valor_unitario: Number(body.valor_unitario ?? body.valorUnitario ?? 0) || 0,
+      validade: body.validade ? String(body.validade) : null,
+      observacao: String(body.observacao || "").trim() || null,
+    };
 
-    const { data, error } = await supabase
-      .from("estoque")
-      .insert({
-        nome: body.nome,
-        categoria: body.categoria ?? "Insumos",
-        unidade: body.unidade ?? "kg",
-        quantidade: Number(body.quantidade ?? 0),
-        minimo: Number(body.minimo ?? 0),
-        valor_unitario: Number(body.valorUnitario ?? 0),
-        local: body.local ?? "",
-        validade: body.validade || null,
-        observacao: body.observacao ?? "",
-      })
-      .select()
-      .single();
+    if (!payload.nome) return fail("Nome do item é obrigatório.");
 
-    if (error) throw error;
+    const { data, error } = await sb.from(TABLE).insert(payload).select("*").single();
+    if (error) return fail(error.message, 500);
 
-    return NextResponse.json({ item: data }, { status: 201 });
+    return ok({ item: data }, 201);
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e.message },
-      { status: 500 }
-    );
+    return fail(e?.message || "Erro no POST /api/estoque", 500);
   }
 }
 
-/* =========================
-   PATCH — editar
-========================= */
 export async function PATCH(req: Request) {
   try {
-    const supabase = getSupabase();
+    const sb = supabaseAdmin();
     const body = await req.json();
 
-    if (!body.id) {
-      return NextResponse.json(
-        { error: "ID obrigatório" },
-        { status: 400 }
-      );
-    }
+    const id = String(body.id || "").trim();
+    if (!id) return fail("ID é obrigatório.");
 
-    const { data, error } = await supabase
-      .from("estoque")
-      .update({
-        nome: body.nome,
-        categoria: body.categoria,
-        unidade: body.unidade,
-        quantidade: Number(body.quantidade),
-        minimo: Number(body.minimo),
-        valor_unitario: Number(body.valorUnitario),
-        local: body.local,
-        validade: body.validade || null,
-        observacao: body.observacao,
-      })
-      .eq("id", body.id)
-      .select()
+    const payload = {
+      nome: String(body.nome || "").trim(),
+      categoria: String(body.categoria || "Produção"),
+      local: String(body.local || "").trim() || null,
+      unidade: String(body.unidade || "kg"),
+      quantidade: Number(body.quantidade ?? 0) || 0,
+      minimo: Number(body.minimo ?? 0) || 0,
+      valor_unitario: Number(body.valor_unitario ?? body.valorUnitario ?? 0) || 0,
+      validade: body.validade ? String(body.validade) : null,
+      observacao: String(body.observacao || "").trim() || null,
+    };
+
+    if (!payload.nome) return fail("Nome do item é obrigatório.");
+
+    const { data, error } = await sb
+      .from(TABLE)
+      .update(payload)
+      .eq("id", id)
+      .select("*")
       .single();
 
-    if (error) throw error;
+    if (error) return fail(error.message, 500);
 
-    return NextResponse.json({ item: data });
+    return ok({ item: data });
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e.message },
-      { status: 500 }
-    );
+    return fail(e?.message || "Erro no PATCH /api/estoque", 500);
   }
 }
 
-/* =========================
-   DELETE — excluir
-========================= */
 export async function DELETE(req: Request) {
   try {
-    const supabase = getSupabase();
+    const sb = supabaseAdmin();
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get("id");
 
-    if (!id) {
-      return NextResponse.json(
-        { error: "ID obrigatório" },
-        { status: 400 }
-      );
-    }
+    const id = String(searchParams.get("id") || "").trim();
+    if (!id) return fail("ID é obrigatório.");
 
-    const { error } = await supabase
-      .from("estoque")
-      .delete()
-      .eq("id", id);
+    const { error } = await sb.from(TABLE).delete().eq("id", id);
+    if (error) return fail(error.message, 500);
 
-    if (error) throw error;
-
-    return NextResponse.json({ ok: true });
+    return ok({ ok: true });
   } catch (e: any) {
-    return NextResponse.json(
-      { error: e.message },
-      { status: 500 }
-    );
+    return fail(e?.message || "Erro no DELETE /api/estoque", 500);
   }
 }
