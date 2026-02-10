@@ -2,386 +2,491 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type InsumoItem = {
+type Insumo = {
   id: string;
   nome: string;
   categoria: string;
+  local: string;
   unidade: string;
   quantidade: number;
   minimo: number;
   valor_unitario: number;
-  local: string;
-  validade: string | null; // YYYY-MM-DD
-  observacao: string;
-  created_at?: string;
-  updated_at?: string;
+  validade?: string | null;
+  observacao?: string | null;
+  created_at: string;
 };
 
 type Mov = {
   id: string;
-  item_id: string;
-  tipo: "entrada" | "saida" | "ajuste";
+  insumo_id: string;
+  tipo: "ENTRADA" | "SAIDA";
   quantidade: number;
-  custo_unitario: number;
-  motivo: string;
-  data: string;
+  data: string; // YYYY-MM-DD
+  observacao?: string | null;
+  created_at: string;
 };
 
 const CATEGORIAS = [
-  "Todas",
   "Fertilizantes",
   "Defensivos",
   "Sementes",
-  "Adjuvantes",
-  "Combustível",
   "Outros",
-] as const;
+];
 
-type Categoria = (typeof CATEGORIAS)[number];
-
-function brl(n: number) {
-  const v = Number.isFinite(n) ? n : 0;
-  return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+function todayISO() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
-function asNumber(v: any, fallback = 0) {
-  if (v === "" || v === null || v === undefined) return fallback;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function fmtDT(iso?: string | null) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("pt-BR");
-}
-
-async function safeJson(res: Response) {
-  const text = await res.text();
-  if (!text) return {};
+function fmtBRL(n: number) {
   try {
-    return JSON.parse(text);
+    return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
   } catch {
-    return { error: "Resposta inválida (JSON quebrado)" };
+    return `R$ ${n.toFixed(2)}`;
   }
 }
 
 export default function InsumosPage() {
-  const [items, setItems] = useState<InsumoItem[]>([]);
+  const [items, setItems] = useState<Insumo[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [buscaDraft, setBuscaDraft] = useState("");
+  const [categoriaDraft, setCategoriaDraft] = useState("Todas");
+  const [lowOnlyDraft, setLowOnlyDraft] = useState(false);
+
   const [busca, setBusca] = useState("");
-  const [categoria, setCategoria] = useState<Categoria>("Todas");
+  const [categoria, setCategoria] = useState("Todas");
   const [lowOnly, setLowOnly] = useState(false);
 
-  const [mounted, setMounted] = useState(false);
-  const [updatedAtIso, setUpdatedAtIso] = useState("");
+  const [updatedAtIso, setUpdatedAtIso] = useState<string | null>(null);
 
-  // Modal item (add/edit)
-  const [showItemModal, setShowItemModal] = useState(false);
-  const [editing, setEditing] = useState<InsumoItem | null>(null);
-  const [saving, setSaving] = useState(false);
+  const updatedAtHuman = useMemo(() => {
+    if (!updatedAtIso) return "—";
+    try {
+      const d = new Date(updatedAtIso);
+      return d.toLocaleString("pt-BR");
+    } catch {
+      return updatedAtIso;
+    }
+  }, [updatedAtIso]);
+
+  // MODAL ADD/EDIT
+  const [showModal, setShowModal] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     nome: "",
     categoria: "Fertilizantes",
-    unidade: "kg",
-    quantidade: "",
-    minimo: "",
-    valorUnitario: "",
     local: "",
+    unidade: "kg",
+    quantidade: 0, // só no CREATE
+    minimo: 0,
+    valor_unitario: 0,
     validade: "",
     observacao: "",
   });
 
-  // Modal movimentação
-  const [showMovModal, setShowMovModal] = useState(false);
-  const [movItem, setMovItem] = useState<InsumoItem | null>(null);
-  const [movs, setMovs] = useState<Mov[]>([]);
-  const [movLoading, setMovLoading] = useState(false);
-  const [movSaving, setMovSaving] = useState(false);
-
+  // MOVIMENTAÇÃO
+  const [movOpen, setMovOpen] = useState(false);
+  const [movTipo, setMovTipo] = useState<"ENTRADA" | "SAIDA">("ENTRADA");
+  const [movInsumo, setMovInsumo] = useState<Insumo | null>(null);
   const [movForm, setMovForm] = useState({
-    tipo: "entrada" as "entrada" | "saida" | "ajuste",
-    quantidade: "",
-    custoUnitario: "",
-    motivo: "",
+    quantidade: 1,
+    data: todayISO(),
+    observacao: "",
   });
 
-  useEffect(() => setMounted(true), []);
+  // HISTÓRICO
+  const [histOpen, setHistOpen] = useState(false);
+  const [histInsumo, setHistInsumo] = useState<Insumo | null>(null);
+  const [movs, setMovs] = useState<Mov[]>([]);
+  const [movLoading, setMovLoading] = useState(false);
 
-  const updatedAtHuman = useMemo(() => {
-    if (!mounted || !updatedAtIso) return "—";
-    return fmtDT(updatedAtIso);
-  }, [mounted, updatedAtIso]);
-
-  async function load() {
-    setLoading(true);
+  async function load(current?: { q?: string; categoria?: string; low?: boolean }) {
     try {
+      setLoading(true);
+
+      const q = (current?.q ?? busca).trim();
+      const cat = (current?.categoria ?? categoria).trim();
+      const low = current?.low ?? lowOnly;
+
       const params = new URLSearchParams();
-      if (busca.trim()) params.set("q", busca.trim());
-      if (categoria !== "Todas") params.set("categoria", categoria);
-      if (lowOnly) params.set("low", "1");
+      if (q) params.append("q", q);
+      if (cat && cat !== "Todas") params.append("categoria", cat);
+      if (low) params.append("low", "1");
 
       const res = await fetch(`/api/insumos?${params.toString()}`, { cache: "no-store" });
-      const json = await safeJson(res);
+      const json = await res.json();
 
-      if (!res.ok) throw new Error(json?.error || `Falha ao carregar (${res.status})`);
+      if (!res.ok) throw new Error(json?.error || "Falha ao carregar insumos.");
 
-      const arr = (json.items || []).map((it: any) => ({
-        ...it,
-        quantidade: asNumber(it.quantidade, 0),
-        minimo: asNumber(it.minimo, 0),
-        valor_unitario: asNumber(it.valor_unitario, 0),
-      }));
-
-      setItems(arr);
+      setItems(json.items || []);
       setUpdatedAtIso(new Date().toISOString());
     } catch (e: any) {
-      alert(e?.message || "Falha ao carregar");
-      setItems([]);
+      alert(e?.message || "Falha ao carregar insumos.");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    load();
+    load({ q: "", categoria: "Todas", low: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const metrics = useMemo(() => {
-    const total = items.length;
-    const abaixo = items.filter((i) => (i.quantidade ?? 0) < (i.minimo ?? 0)).length;
-    const valor = items.reduce((acc, i) => acc + (i.quantidade ?? 0) * (i.valor_unitario ?? 0), 0);
-    return { total, abaixo, valor };
+  const total = items.length;
+
+  const belowMin = useMemo(() => {
+    return items.filter((i) => Number(i.quantidade ?? 0) < Number(i.minimo ?? 0)).length;
   }, [items]);
 
-  function openCreate() {
-    setEditing(null);
+  const valorTotal = useMemo(() => {
+    return items.reduce((acc, i) => acc + Number(i.quantidade || 0) * Number(i.valor_unitario || 0), 0);
+  }, [items]);
+
+  function openAdd() {
+    setEditId(null);
     setForm({
       nome: "",
       categoria: "Fertilizantes",
-      unidade: "kg",
-      quantidade: "",
-      minimo: "",
-      valorUnitario: "",
       local: "",
+      unidade: "kg",
+      quantidade: 0,
+      minimo: 0,
+      valor_unitario: 0,
       validade: "",
       observacao: "",
     });
-    setShowItemModal(true);
+    setShowModal(true);
   }
 
-  function openEdit(it: InsumoItem) {
-    setEditing(it);
+  function openEdit(i: Insumo) {
+    setEditId(i.id);
     setForm({
-      nome: it.nome || "",
-      categoria: it.categoria || "Fertilizantes",
-      unidade: it.unidade || "kg",
-      quantidade: String(it.quantidade ?? 0),
-      minimo: String(it.minimo ?? 0),
-      valorUnitario: String(it.valor_unitario ?? 0),
-      local: it.local || "",
-      validade: it.validade || "",
-      observacao: it.observacao || "",
+      nome: i.nome || "",
+      categoria: i.categoria || "Fertilizantes",
+      local: i.local || "",
+      unidade: i.unidade || "kg",
+      quantidade: Number(i.quantidade || 0), // apenas para mostrar, não salva no PATCH
+      minimo: Number(i.minimo || 0),
+      valor_unitario: Number(i.valor_unitario || 0),
+      validade: i.validade || "",
+      observacao: i.observacao || "",
     });
-    setShowItemModal(true);
+    setShowModal(true);
   }
 
-  function closeItemModal() {
-    setShowItemModal(false);
-    setEditing(null);
-    setSaving(false);
-  }
-
-  async function saveItem() {
-    if (!form.nome.trim()) {
-      alert("Nome do insumo é obrigatório.");
-      return;
-    }
-
-    setSaving(true);
+  async function saveInsumo() {
     try {
-      const payload = {
-        ...(editing ? { id: editing.id } : {}),
-        nome: form.nome.trim(),
+      const payload: any = {
+        nome: form.nome,
         categoria: form.categoria,
+        local: form.local,
         unidade: form.unidade,
-        quantidade: asNumber(form.quantidade, 0),
-        minimo: asNumber(form.minimo, 0),
-        valorUnitario: asNumber(form.valorUnitario, 0),
-        local: form.local || "",
-        validade: form.validade || null,
-        observacao: form.observacao || "",
+        minimo: Number(form.minimo || 0),
+        valor_unitario: Number(form.valor_unitario || 0),
+        validade: form.validade ? form.validade : null,
+        observacao: form.observacao,
       };
 
-      const res = await fetch("/api/insumos", {
-        method: editing ? "PATCH" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      let res: Response;
 
-      const json = await safeJson(res);
-      if (!res.ok) throw new Error(json?.error || `Falha ao salvar (${res.status})`);
+      if (!editId) {
+        payload.quantidade = Number(form.quantidade || 0);
+        res = await fetch("/api/insumos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        payload.id = editId;
+        res = await fetch("/api/insumos", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
 
-      closeItemModal();
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Falha ao salvar.");
+
+      setShowModal(false);
       await load();
     } catch (e: any) {
-      alert(e?.message || "Falha ao salvar");
-    } finally {
-      setSaving(false);
+      alert(e?.message || "Falha ao salvar.");
     }
   }
 
-  async function removeItem(id: string) {
-    if (!confirm("Excluir este insumo?")) return;
-
+  async function deleteInsumo(id: string) {
+    if (!confirm("Excluir este insumo? Isso apaga também as movimentações.")) return;
     try {
       const res = await fetch(`/api/insumos?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-      const json = await safeJson(res);
-
-      if (!res.ok) throw new Error(json?.error || `Falha ao excluir (${res.status})`);
-
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Falha ao excluir.");
       await load();
     } catch (e: any) {
-      alert(e?.message || "Falha ao excluir");
+      alert(e?.message || "Falha ao excluir.");
     }
   }
 
-  async function openMov(it: InsumoItem) {
-    setMovItem(it);
-    setMovForm({ tipo: "entrada", quantidade: "", custoUnitario: "", motivo: "" });
-    setShowMovModal(true);
-    await loadMovs(it.id);
+  function openMov(i: Insumo, tipo: "ENTRADA" | "SAIDA") {
+    setMovInsumo(i);
+    setMovTipo(tipo);
+    setMovForm({ quantidade: 1, data: todayISO(), observacao: "" });
+    setMovOpen(true);
   }
 
-  async function loadMovs(itemId: string) {
-    setMovLoading(true);
+  async function saveMov() {
+    if (!movInsumo) return;
     try {
-      const res = await fetch(`/api/insumos/movimentacoes?itemId=${encodeURIComponent(itemId)}`, {
-        cache: "no-store",
+      const res = await fetch("/api/insumos/movimentacoes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          insumo_id: movInsumo.id,
+          tipo: movTipo,
+          quantidade: Number(movForm.quantidade),
+          data: movForm.data || null,
+          observacao: movForm.observacao,
+        }),
       });
-      const json = await safeJson(res);
 
-      if (!res.ok) throw new Error(json?.error || `Falha ao carregar movimentações (${res.status})`);
-      setMovs(json.items || []);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Falha ao movimentar.");
+
+      setMovOpen(false);
+      await load();
     } catch (e: any) {
-      alert(e?.message || "Falha ao carregar movimentações");
+      alert(e?.message || "Falha ao movimentar.");
+    }
+  }
+
+  async function openHist(i: Insumo) {
+    setHistInsumo(i);
+    setHistOpen(true);
+    try {
+      setMovLoading(true);
+      const res = await fetch(`/api/insumos/movimentacoes?insumo_id=${encodeURIComponent(i.id)}`, { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Falha ao carregar histórico.");
+      setMovs(json.movs || []);
+    } catch (e: any) {
+      alert(e?.message || "Falha ao carregar histórico.");
       setMovs([]);
     } finally {
       setMovLoading(false);
     }
   }
 
-  async function addMov() {
-    if (!movItem) return;
-
-    const qtd = asNumber(movForm.quantidade, -1);
-    const custo = asNumber(movForm.custoUnitario, 0);
-
-    if (qtd <= 0) {
-      alert("Quantidade inválida.");
-      return;
-    }
-
-    setMovSaving(true);
+  async function deleteMov(id: string) {
+    if (!confirm("Apagar esta movimentação? (o saldo será ajustado)")) return;
     try {
-      const res = await fetch("/api/insumos/movimentacoes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          itemId: movItem.id,
-          tipo: movForm.tipo,
-          quantidade: qtd,
-          custoUnitario: custo,
-          motivo: movForm.motivo,
-        }),
-      });
-
-      const json = await safeJson(res);
-      if (!res.ok) throw new Error(json?.error || `Falha ao registrar movimentação (${res.status})`);
-
-      // atualiza saldo na lista e recarrega o histórico
+      const res = await fetch(`/api/insumos/movimentacoes?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Falha ao apagar.");
+      if (histInsumo) await openHist(histInsumo);
       await load();
-      await loadMovs(movItem.id);
-
-      // pega item atualizado da lista
-      const refreshed = await fetch(`/api/insumos?q=&categoria=Todas`, { cache: "no-store" });
-      const refJson = await safeJson(refreshed);
-      const updated = (refJson.items || []).find((x: any) => x.id === movItem.id);
-      if (updated) setMovItem(updated);
-
-      setMovForm({ tipo: "entrada", quantidade: "", custoUnitario: "", motivo: "" });
     } catch (e: any) {
-      alert(e?.message || "Falha ao registrar movimentação");
-    } finally {
-      setMovSaving(false);
+      alert(e?.message || "Falha ao apagar.");
     }
-  }
-
-  function clearFilters() {
-    setBusca("");
-    setCategoria("Todas");
-    setLowOnly(false);
-    setTimeout(() => load(), 0);
   }
 
   function applyFilters() {
-    load();
+    setBusca(buscaDraft);
+    setCategoria(categoriaDraft);
+    setLowOnly(lowOnlyDraft);
+    load({ q: buscaDraft, categoria: categoriaDraft, low: lowOnlyDraft });
+  }
+
+  function clearFilters() {
+    setBuscaDraft("");
+    setCategoriaDraft("Todas");
+    setLowOnlyDraft(false);
+
+    setBusca("");
+    setCategoria("Todas");
+    setLowOnly(false);
+
+    load({ q: "", categoria: "Todas", low: false });
   }
 
   return (
     <div className="page-wrapper">
       <div className="page-content">
-        <main className="pat-shell">
-          {/* HEADER */}
-          <div className="pat-header">
-            <div>
-              <div className="pat-title">Insumos</div>
-              <div className="pat-subtitle">Controle de fertilizantes, defensivos, sementes e outros insumos.</div>
-            </div>
+        {/* HEADER (igual Estoque) */}
+        <div className="pat-header">
+          <div>
+            <div className="pat-title">Insumos</div>
+            <div className="pat-subtitle">Controle de fertilizantes, defensivos e sementes (com movimentações)</div>
+          </div>
 
-            <div className="pat-actions">
-              <button className="pat-btn pat-btn-muted" onClick={load}>
-                Recarregar
-              </button>
-              <button className="pat-btn pat-btn-primary" onClick={openCreate}>
-                + Adicionar
-              </button>
+          <div className="pat-header-actions">
+            <button className="btn-outline" onClick={() => load()}>
+              Recarregar
+            </button>
+            <button className="btn-primary" onClick={openAdd}>
+              + Adicionar
+            </button>
+          </div>
+        </div>
+
+        {/* MÉTRICAS (igual Estoque) */}
+        <div className="pat-metrics">
+          <div className="pat-metric">
+            <div className="pat-metric-label">Itens</div>
+            <div className="pat-metric-value">{total}</div>
+            <div className="pat-metric-help">Total na lista (com filtros)</div>
+          </div>
+
+          <div className="pat-metric">
+            <div className="pat-metric-label">Valor estimado</div>
+            <div className="pat-metric-value">{fmtBRL(valorTotal)}</div>
+            <div className="pat-metric-help">Soma aprox. qtd × valor unit.</div>
+          </div>
+
+          <div className="pat-metric">
+            <div className="pat-metric-label">Abaixo do mínimo</div>
+            <div className="pat-metric-value">{belowMin}</div>
+            <div className="pat-metric-help">Insumos críticos</div>
+          </div>
+        </div>
+
+        {/* FILTROS (mesma cara do Estoque) */}
+        <div className="pat-filters">
+          <div className="pat-filter-col">
+            <div className="pat-filter-label">Buscar</div>
+            <input
+              className="pat-input"
+              value={buscaDraft}
+              onChange={(e) => setBuscaDraft(e.target.value)}
+              placeholder="Digite: adubo, semente, galpão..."
+            />
+            <div className="pat-filter-sub">
+              Atualizado <b>{updatedAtHuman}</b>
             </div>
           </div>
 
-          {/* MÉTRICAS */}
-          <div className="pat-metrics">
-            <div className="pat-metric">
-              <div className="pat-metric-label">Itens</div>
-              <div className="pat-metric-value">{metrics.total}</div>
-              <div className="pat-metric-foot">Total na lista (com filtros)</div>
-            </div>
-
-            <div className="pat-metric">
-              <div className="pat-metric-label">Valor estimado</div>
-              <div className="pat-metric-value">{brl(metrics.valor)}</div>
-              <div className="pat-metric-foot">qtd × valor unit.</div>
-            </div>
-
-            <div className="pat-metric">
-              <div className="pat-metric-label">Abaixo do mínimo</div>
-              <div className="pat-metric-value">{metrics.abaixo}</div>
-              <div className="pat-metric-foot">precisa repor</div>
-            </div>
+          <div className="pat-filter-col">
+            <div className="pat-filter-label">Categoria</div>
+            <select className="pat-select" value={categoriaDraft} onChange={(e) => setCategoriaDraft(e.target.value)}>
+              <option value="Todas">Todas</option>
+              {CATEGORIAS.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {/* FILTROS */}
-          <div className="pat-card">
-            <div className="pat-card-title">Filtros</div>
+          <div className="pat-filter-col pat-filter-inline">
+            <label className="pat-check">
+              <input type="checkbox" checked={lowOnlyDraft} onChange={(e) => setLowOnlyDraft(e.target.checked)} />
+              <span>Abaixo do mínimo</span>
+            </label>
+          </div>
 
-            <div className="pat-form-grid">
-              <div className="pat-field">
+          <div className="pat-filter-actions">
+            <button className="btn-outline" onClick={clearFilters}>
+              Limpar
+            </button>
+            <button className="btn-primary" onClick={applyFilters}>
+              Aplicar
+            </button>
+          </div>
+        </div>
+
+        {/* LISTA / TABELA (igual Estoque) */}
+        <div className="pat-table-card">
+          <div className="pat-table-title">Itens cadastrados</div>
+
+          {loading ? (
+            <div className="pat-empty">Carregando…</div>
+          ) : items.length === 0 ? (
+            <div className="pat-empty">Nenhum insumo encontrado. Clique em <b>+ Adicionar</b> para cadastrar.</div>
+          ) : (
+            <div className="pat-table-scroll">
+              <table className="pat-table">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Categoria</th>
+                    <th>Local</th>
+                    <th>Qtd</th>
+                    <th>Un</th>
+                    <th>Mínimo</th>
+                    <th>Valor unit.</th>
+                    <th>Validade</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((i) => {
+                    const critico = Number(i.quantidade ?? 0) < Number(i.minimo ?? 0);
+                    return (
+                      <tr key={i.id} className={critico ? "pat-row-warn" : ""}>
+                        <td className="pat-strong">{i.nome}</td>
+                        <td>{i.categoria}</td>
+                        <td>{i.local || "—"}</td>
+                        <td>{Number(i.quantidade ?? 0)}</td>
+                        <td>{i.unidade}</td>
+                        <td>{Number(i.minimo ?? 0)}</td>
+                        <td>{fmtBRL(Number(i.valor_unitario ?? 0))}</td>
+                        <td>{i.validade || "—"}</td>
+                        <td className="pat-actions">
+                          <button className="btn-outline-sm" onClick={() => openMov(i, "ENTRADA")}>
+                            Entrada
+                          </button>
+                          <button className="btn-outline-sm" onClick={() => openMov(i, "SAIDA")}>
+                            Saída
+                          </button>
+                          <button className="btn-outline-sm" onClick={() => openHist(i)}>
+                            Histórico
+                          </button>
+                          <button className="btn-outline-sm" onClick={() => openEdit(i)}>
+                            Editar
+                          </button>
+                          <button className="btn-danger-sm" onClick={() => deleteInsumo(i.id)}>
+                            Excluir
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="pat-footnote">Fonte: API local <b>/api/insumos</b> e <b>/api/insumos/movimentacoes</b>.</div>
+        </div>
+      </div>
+
+      {/* MODAL ADD/EDIT */}
+      {showModal && (
+        <div className="modal-backdrop">
+          <div className="modal modal-lg">
+            <div className="modal-head">
+              <div>
+                <h2>{editId ? "Editar insumo" : "Adicionar insumo"}</h2>
+                <p>{editId ? "Edite dados (saldo muda via movimentação)." : "Cadastre com saldo inicial e mínimo."}</p>
+              </div>
+              <button className="btn-outline" onClick={() => setShowModal(false)}>
+                Fechar
+              </button>
+            </div>
+
+            <div className="modal-grid">
+              <div>
+                <label>Nome</label>
+                <input value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
+              </div>
+
+              <div>
                 <label>Categoria</label>
-                <select className="pat-select" value={categoria} onChange={(e) => setCategoria(e.target.value as Categoria)}>
+                <select value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
                   {CATEGORIAS.map((c) => (
                     <option key={c} value={c}>
                       {c}
@@ -390,280 +495,182 @@ export default function InsumosPage() {
                 </select>
               </div>
 
-              <div className="pat-field">
-                <label>Status</label>
-                <label className="pat-checkbox">
-                  <input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} />
-                  <span>Abaixo do mínimo</span>
-                </label>
+              <div>
+                <label>Local</label>
+                <input value={form.local} onChange={(e) => setForm({ ...form, local: e.target.value })} placeholder="Ex: Barracão" />
               </div>
 
-              <div className="pat-field pat-field-wide">
-                <label>Buscar</label>
+              <div>
+                <label>Unidade</label>
+                <input value={form.unidade} onChange={(e) => setForm({ ...form, unidade: e.target.value })} />
+              </div>
+
+              {!editId && (
+                <div>
+                  <label>Quantidade (inicial)</label>
+                  <input
+                    type="number"
+                    value={form.quantidade}
+                    onChange={(e) => setForm({ ...form, quantidade: Number(e.target.value) })}
+                  />
+                </div>
+              )}
+
+              <div>
+                <label>Mínimo</label>
+                <input type="number" value={form.minimo} onChange={(e) => setForm({ ...form, minimo: Number(e.target.value) })} />
+              </div>
+
+              <div>
+                <label>Valor unitário (R$)</label>
                 <input
-                  className="pat-input"
-                  value={busca}
-                  onChange={(e) => setBusca(e.target.value)}
-                  placeholder="Digite: nome, local, observação..."
+                  type="number"
+                  step="0.01"
+                  value={form.valor_unitario}
+                  onChange={(e) => setForm({ ...form, valor_unitario: Number(e.target.value) })}
+                />
+              </div>
+
+              <div>
+                <label>Validade</label>
+                <input type="date" value={form.validade} onChange={(e) => setForm({ ...form, validade: e.target.value })} />
+              </div>
+
+              <div className="modal-span-2">
+                <label>Observação</label>
+                <input
+                  value={form.observacao}
+                  onChange={(e) => setForm({ ...form, observacao: e.target.value })}
+                  placeholder="Ex: guardar em local seco"
                 />
               </div>
             </div>
 
-            <div className="pat-form-row">
-              <div className="pat-muted">Atualizado {updatedAtHuman}</div>
-              <div className="pat-actions" style={{ marginLeft: "auto" }}>
-                <button className="pat-btn pat-btn-muted" onClick={clearFilters}>
-                  Limpar
-                </button>
-                <button className="pat-btn pat-btn-primary" onClick={applyFilters}>
-                  Aplicar
-                </button>
-              </div>
+            <div className="modal-actions">
+              <button className="btn-outline" onClick={() => setShowModal(false)}>
+                Cancelar
+              </button>
+              <button className="btn-primary" onClick={saveInsumo}>
+                Salvar
+              </button>
             </div>
           </div>
+        </div>
+      )}
 
-          {/* LISTA */}
-          <div className="pat-card">
-            <div className="pat-card-title">Itens cadastrados</div>
+      {/* MODAL MOVIMENTAÇÃO */}
+      {movOpen && movInsumo && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div className="modal-head">
+              <div>
+                <h2>
+                  {movTipo === "ENTRADA" ? "Entrada" : "Saída"} • {movInsumo.nome}
+                </h2>
+                <p>
+                  Saldo atual: <b>{Number(movInsumo.quantidade ?? 0)}</b> {movInsumo.unidade}
+                </p>
+              </div>
+              <button className="btn-outline" onClick={() => setMovOpen(false)}>
+                Fechar
+              </button>
+            </div>
 
-            {loading ? (
-              <div className="pat-muted" style={{ marginTop: 10 }}>
-                Carregando...
+            <div className="modal-grid">
+              <div>
+                <label>Quantidade</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={movForm.quantidade}
+                  onChange={(e) => setMovForm({ ...movForm, quantidade: Number(e.target.value) })}
+                />
               </div>
-            ) : items.length === 0 ? (
-              <div className="pat-muted" style={{ marginTop: 10 }}>
-                Nenhum insumo encontrado. Clique em <b>+ Adicionar</b>.
+
+              <div>
+                <label>Data</label>
+                <input type="date" value={movForm.data} onChange={(e) => setMovForm({ ...movForm, data: e.target.value })} />
               </div>
+
+              <div className="modal-span-2">
+                <label>Observação</label>
+                <input
+                  value={movForm.observacao}
+                  onChange={(e) => setMovForm({ ...movForm, observacao: e.target.value })}
+                  placeholder="Ex: aplicação no talhão 3"
+                />
+              </div>
+            </div>
+
+            <div className="modal-actions">
+              <button className="btn-outline" onClick={() => setMovOpen(false)}>
+                Cancelar
+              </button>
+              <button className="btn-primary" onClick={saveMov}>
+                Salvar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL HISTÓRICO */}
+      {histOpen && histInsumo && (
+        <div className="modal-backdrop">
+          <div className="modal modal-lg">
+            <div className="modal-head">
+              <div>
+                <h2>Histórico • {histInsumo.nome}</h2>
+                <p>Movimentações (entrada/saída)</p>
+              </div>
+              <button className="btn-outline" onClick={() => setHistOpen(false)}>
+                Fechar
+              </button>
+            </div>
+
+            {movLoading ? (
+              <div className="pat-empty">Carregando…</div>
+            ) : movs.length === 0 ? (
+              <div className="pat-empty">Sem movimentações.</div>
             ) : (
-              <div className="pat-table-wrap">
+              <div className="pat-table-scroll">
                 <table className="pat-table">
                   <thead>
                     <tr>
-                      <th>Insumo</th>
-                      <th>Categoria</th>
-                      <th>Local</th>
-                      <th>Qtd</th>
-                      <th>Un</th>
-                      <th>Mín</th>
-                      <th>Valor</th>
-                      <th>Validade</th>
-                      <th className="pat-th-right">Ações</th>
+                      <th>Data</th>
+                      <th>Tipo</th>
+                      <th>Quantidade</th>
+                      <th>Obs</th>
+                      <th>Ações</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map((it) => {
-                      const warn = (it.quantidade ?? 0) < (it.minimo ?? 0);
-                      return (
-                        <tr key={it.id} className={warn ? "pat-row-warn" : ""}>
-                          <td className="pat-td-strong">{it.nome}</td>
-                          <td>{it.categoria}</td>
-                          <td>{it.local || "—"}</td>
-                          <td>{Number(it.quantidade || 0).toLocaleString("pt-BR")}</td>
-                          <td>{it.unidade}</td>
-                          <td>{Number(it.minimo || 0).toLocaleString("pt-BR")}</td>
-                          <td>{brl(Number(it.valor_unitario || 0))}</td>
-                          <td>{it.validade || "—"}</td>
-                          <td className="pat-td-actions">
-                            <button className="pat-btn pat-btn-primary" onClick={() => openMov(it)}>
-                              Movimentar
-                            </button>
-                            <button className="pat-btn pat-btn-muted" onClick={() => openEdit(it)}>
-                              Editar
-                            </button>
-                            <button className="pat-btn pat-btn-danger" onClick={() => removeItem(it.id)}>
-                              Excluir
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {movs.map((m) => (
+                      <tr key={m.id}>
+                        <td>{m.data}</td>
+                        <td>{m.tipo}</td>
+                        <td>{Number(m.quantidade)}</td>
+                        <td>{m.observacao || "—"}</td>
+                        <td className="pat-actions">
+                          <button className="btn-danger-sm" onClick={() => deleteMov(m.id)}>
+                            Apagar
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
             )}
+
+            <div className="modal-actions">
+              <button className="btn-outline" onClick={() => setHistOpen(false)}>
+                Fechar
+              </button>
+            </div>
           </div>
-
-          {/* Modal Add/Edit */}
-          {showItemModal && (
-            <div className="pat-modal-backdrop" onMouseDown={closeItemModal}>
-              <div className="pat-modal" onMouseDown={(e) => e.stopPropagation()}>
-                <div className="pat-modal-header">
-                  <div>
-                    <div className="pat-modal-title">{editing ? "Editar insumo" : "Adicionar insumo"}</div>
-                    <div className="pat-muted">Cadastro de insumos (com saldo e mínimo).</div>
-                  </div>
-                  <button className="pat-btn pat-btn-muted" onClick={closeItemModal}>
-                    Fechar
-                  </button>
-                </div>
-
-                <div className="pat-modal-grid">
-                  <div className="pat-field">
-                    <label>Nome</label>
-                    <input className="pat-input" value={form.nome} onChange={(e) => setForm((p) => ({ ...p, nome: e.target.value }))} />
-                  </div>
-
-                  <div className="pat-field">
-                    <label>Categoria</label>
-                    <select className="pat-select" value={form.categoria} onChange={(e) => setForm((p) => ({ ...p, categoria: e.target.value }))}>
-                      {CATEGORIAS.filter((c) => c !== "Todas").map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="pat-field">
-                    <label>Local</label>
-                    <input className="pat-input" value={form.local} onChange={(e) => setForm((p) => ({ ...p, local: e.target.value }))} />
-                  </div>
-
-                  <div className="pat-field">
-                    <label>Unidade</label>
-                    <input className="pat-input" value={form.unidade} onChange={(e) => setForm((p) => ({ ...p, unidade: e.target.value }))} placeholder="kg, L, un..." />
-                  </div>
-
-                  <div className="pat-field">
-                    <label>Quantidade</label>
-                    <input className="pat-input" value={form.quantidade} onChange={(e) => setForm((p) => ({ ...p, quantidade: e.target.value }))} />
-                  </div>
-
-                  <div className="pat-field">
-                    <label>Mínimo</label>
-                    <input className="pat-input" value={form.minimo} onChange={(e) => setForm((p) => ({ ...p, minimo: e.target.value }))} />
-                  </div>
-
-                  <div className="pat-field">
-                    <label>Valor unitário (R$)</label>
-                    <input className="pat-input" value={form.valorUnitario} onChange={(e) => setForm((p) => ({ ...p, valorUnitario: e.target.value }))} />
-                  </div>
-
-                  <div className="pat-field">
-                    <label>Validade</label>
-                    <input className="pat-input" type="date" value={form.validade} onChange={(e) => setForm((p) => ({ ...p, validade: e.target.value }))} />
-                  </div>
-
-                  <div className="pat-field" style={{ gridColumn: "1 / -1" }}>
-                    <label>Observação</label>
-                    <input className="pat-input" value={form.observacao} onChange={(e) => setForm((p) => ({ ...p, observacao: e.target.value }))} />
-                  </div>
-                </div>
-
-                <div className="pat-modal-actions">
-                  <button className="pat-btn pat-btn-muted" onClick={closeItemModal} disabled={saving}>
-                    Cancelar
-                  </button>
-                  <button className="pat-btn pat-btn-primary" onClick={saveItem} disabled={saving}>
-                    {saving ? "Salvando..." : "Salvar"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Modal Movimentações */}
-          {showMovModal && movItem && (
-            <div className="pat-modal-backdrop" onMouseDown={() => setShowMovModal(false)}>
-              <div className="pat-modal pat-modal-wide" onMouseDown={(e) => e.stopPropagation()}>
-                <div className="pat-modal-header">
-                  <div>
-                    <div className="pat-modal-title">Movimentar insumo</div>
-                    <div className="pat-muted">
-                      <b>{movItem.nome}</b> • Saldo:{" "}
-                      <b>
-                        {Number(movItem.quantidade || 0).toLocaleString("pt-BR")} {movItem.unidade}
-                      </b>
-                    </div>
-                  </div>
-                  <button className="pat-btn pat-btn-muted" onClick={() => setShowMovModal(false)}>
-                    Fechar
-                  </button>
-                </div>
-
-                <div className="pat-modal-body">
-                  <div className="pat-form-grid">
-                    <div className="pat-field">
-                      <label>Tipo</label>
-                      <select className="pat-select" value={movForm.tipo} onChange={(e) => setMovForm((p) => ({ ...p, tipo: e.target.value as any }))}>
-                        <option value="entrada">Entrada</option>
-                        <option value="saida">Saída</option>
-                        <option value="ajuste">Ajuste</option>
-                      </select>
-                    </div>
-
-                    <div className="pat-field">
-                      <label>Quantidade {movForm.tipo === "ajuste" ? "(novo saldo)" : ""}</label>
-                      <input className="pat-input" value={movForm.quantidade} onChange={(e) => setMovForm((p) => ({ ...p, quantidade: e.target.value }))} />
-                    </div>
-
-                    <div className="pat-field">
-                      <label>Custo unit. (opcional)</label>
-                      <input className="pat-input" value={movForm.custoUnitario} onChange={(e) => setMovForm((p) => ({ ...p, custoUnitario: e.target.value }))} />
-                    </div>
-
-                    <div className="pat-field pat-field-wide">
-                      <label>Motivo / Obs.</label>
-                      <input className="pat-input" value={movForm.motivo} onChange={(e) => setMovForm((p) => ({ ...p, motivo: e.target.value }))} placeholder="Ex: compra, aplicação, ajuste inventário..." />
-                    </div>
-
-                    <div className="pat-actions" style={{ alignSelf: "end" }}>
-                      <button className="pat-btn pat-btn-primary" onClick={addMov} disabled={movSaving}>
-                        {movSaving ? "Registrando..." : "Registrar"}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="pat-section-title" style={{ marginTop: 14 }}>
-                    Histórico
-                  </div>
-
-                  {movLoading ? (
-                    <div className="pat-muted" style={{ marginTop: 10 }}>
-                      Carregando...
-                    </div>
-                  ) : movs.length === 0 ? (
-                    <div className="pat-muted" style={{ marginTop: 10 }}>
-                      Nenhuma movimentação ainda.
-                    </div>
-                  ) : (
-                    <div className="pat-table-wrap">
-                      <table className="pat-table">
-                        <thead>
-                          <tr>
-                            <th>Data</th>
-                            <th>Tipo</th>
-                            <th>Qtd</th>
-                            <th>Custo</th>
-                            <th>Motivo</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {movs.map((m) => (
-                            <tr key={m.id}>
-                              <td>{fmtDT(m.data)}</td>
-                              <td style={{ textTransform: "capitalize" }}>{m.tipo}</td>
-                              <td>{Number(m.quantidade).toLocaleString("pt-BR")}</td>
-                              <td>{brl(Number(m.custo_unitario || 0))}</td>
-                              <td>{m.motivo || "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-
-                <div className="pat-modal-actions">
-                  <button className="pat-btn pat-btn-muted" onClick={() => setShowMovModal(false)}>
-                    Fechar
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </main>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

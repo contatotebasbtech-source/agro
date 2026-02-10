@@ -1327,3 +1327,77 @@ body > div {
   .pat-actions{ justify-content: stretch; }
   .pat-btn{ width: 100%; }
 }
+.modal-backdrop{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.55);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: 16px;
+  z-index: 9999;
+}
+
+.modal{
+  width: min(720px, 96vw);
+  background: rgba(5, 20, 10, .98);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+
+.modal-lg{ width: min(980px, 96vw); }
+
+.modal-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.modal-grid{
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.modal-span-2{ grid-column: span 2; }
+
+.modal-grid label{ display:block; font-size: 13px; opacity: .9; margin-bottom: 6px; }
+
+.modal-grid input, .modal-grid select{
+  width:100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(0,0,0,.25);
+  border: 1px solid rgba(255,255,255,.12);
+  color: #eaffea;
+}
+
+.modal-actions{
+  display:flex;
+  justify-content:flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.row-warn td{
+  background: rgba(255, 200, 0, .06);
+}
+/* Deixar os números dos cards (métricas) mais visíveis no Insumos/Estoque */
+.pat-metric-value {
+  color: #ffffff !important;
+  font-weight: 900 !important;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* Opcional: deixar o label e o texto de ajuda mais legíveis também */
+.pat-metric-label {
+  color: rgba(255, 255, 255, 0.75) !important;
+}
+
+.pat-metric-help {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
