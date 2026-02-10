@@ -1401,3 +1401,12 @@ body > div {
 .pat-metric-help {
   color: rgba(255, 255, 255, 0.8) !important;
 }
+/* Leaflet */
+@import "leaflet/dist/leaflet.css";
+
+/* corrigir ícones padrão do Leaflet (quando o bundler não acha os assets) */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  border-radius: 18px;
+}
