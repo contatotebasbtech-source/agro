@@ -11,7 +11,7 @@ const menu = [
   { label: 'Milho', href: '/milho' },
   { label: 'Peixe', href: '/peixe' },
   { label: 'Soja', href: '/soja' },
-  
+  { label: "Insumos", href: "/insumos" },
 { label: "Estoque", href: "/estoque" },
 
   { label: "Patrimônio", href: "/patrimonio" },
