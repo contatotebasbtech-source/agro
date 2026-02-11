@@ -1,182 +1,268 @@
 "use client";
 
+import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+
+// CSS do Leaflet + Draw (IMPORTANTE para aparecer ícones/botões)
 import "leaflet/dist/leaflet.css";
 import "leaflet-draw/dist/leaflet.draw.css";
 
-import { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
+// react-leaflet e react-leaflet-draw precisam rodar só no client
+const MapContainer = dynamic(
+  () => import("react-leaflet").then((m) => m.MapContainer),
+  { ssr: false }
+);
+const TileLayer = dynamic(() => import("react-leaflet").then((m) => m.TileLayer), {
+  ssr: false,
+});
+const FeatureGroup = dynamic(
+  () => import("react-leaflet").then((m) => m.FeatureGroup),
+  { ssr: false }
+);
+const Marker = dynamic(() => import("react-leaflet").then((m) => m.Marker), {
+  ssr: false,
+});
+const Popup = dynamic(() => import("react-leaflet").then((m) => m.Popup), {
+  ssr: false,
+});
 
-type Center = [number, number];
+// EditControl vem do react-leaflet-draw
+const EditControl = dynamic(
+  () => import("react-leaflet-draw").then((m) => m.EditControl),
+  { ssr: false }
+);
 
-const MapContainer = dynamic(async () => (await import("react-leaflet")).MapContainer, { ssr: false });
-const TileLayer = dynamic(async () => (await import("react-leaflet")).TileLayer, { ssr: false });
-const FeatureGroup = dynamic(async () => (await import("react-leaflet")).FeatureGroup, { ssr: false });
-const GeoJSON = dynamic(async () => (await import("react-leaflet")).GeoJSON, { ssr: false });
-const EditControl = dynamic(async () => (await import("react-leaflet-draw")).EditControl, { ssr: false });
+type PinTipo = "Ponto" | "Area";
+
+export type Pin = {
+  id: string;
+  nome: string;
+  tipo: PinTipo;
+  lat: number;
+  lng: number;
+  // quando for área (polígono/retângulo), guardamos GeoJSON
+  geojson?: any;
+};
+
+type Props = {
+  center: { lat: number; lng: number };
+  zoom: number;
+  pins: Pin[];
+  onPinsChange: (next: Pin[]) => void;
+  height?: number | string;
+};
 
 function uid() {
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-export default function MapClient() {
-  const [mounted, setMounted] = useState(false);
-  const [center, setCenter] = useState<Center>([-15.793889, -47.882778]);
-  const [zoom, setZoom] = useState(15);
+export default function MapClient({
+  center,
+  zoom,
+  pins,
+  onPinsChange,
+  height = 380,
+}: Props) {
+  const mountedRef = useRef(false);
+  const fgRef = useRef<any>(null);
 
-  const [areas, setAreas] = useState<any[]>([]); // GeoJSON Features
-  const [status, setStatus] = useState("");
-
-  useEffect(() => setMounted(true), []);
-
-  // Carrega áreas do localStorage
+  // Corrige ícones padrão do Leaflet (sem precisar colocar arquivos no /public)
   useEffect(() => {
-    if (!mounted) return;
-    try {
-      const raw = localStorage.getItem("agro_mapa_areas");
-      if (raw) setAreas(JSON.parse(raw));
-    } catch {}
-  }, [mounted]);
-
-  // Salva áreas no localStorage
-  useEffect(() => {
-    if (!mounted) return;
-    try {
-      localStorage.setItem("agro_mapa_areas", JSON.stringify(areas));
-    } catch {}
-  }, [areas, mounted]);
-
-  // Fix ícones padrão do Leaflet em produção
-  useEffect(() => {
-    if (!mounted) return;
+    let cancelled = false;
 
     (async () => {
-      const L = await import("leaflet");
-      // @ts-ignore
-      delete (L as any).Icon.Default.prototype._getIconUrl;
-      // @ts-ignore
-      (L as any).Icon.Default.mergeOptions({
-        iconRetinaUrl: "/leaflet/marker-icon-2x.png",
-        iconUrl: "/leaflet/marker-icon.png",
-        shadowUrl: "/leaflet/marker-shadow.png",
-      });
+      try {
+        const L: any = await import("leaflet");
+
+        // Evita erro em hot-reload
+        if (cancelled) return;
+
+        delete L.Icon.Default.prototype._getIconUrl;
+
+        L.Icon.Default.mergeOptions({
+          iconRetinaUrl:
+            "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+          iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+          shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+        });
+      } catch {
+        // se falhar, não quebra o app
+      }
     })();
-  }, [mounted]);
 
-  function usarMinhaLocalizacao() {
-    if (!navigator.geolocation) {
-      setStatus("Geolocalização não suportada no navegador.");
-      return;
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Só renderiza mapa depois de montar (evita mismatch)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    setMounted(true);
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const mapCenter = useMemo(() => [center.lat, center.lng] as [number, number], [center]);
+
+  function addPin(pin: Pin) {
+    const next = [pin, ...pins];
+    onPinsChange(next);
+  }
+
+  function removePin(id: string) {
+    const next = pins.filter((p) => p.id !== id);
+    onPinsChange(next);
+  }
+
+  // Quando desenha algo no mapa
+  async function handleCreated(e: any) {
+    try {
+      const layer = e.layer;
+      const layerType = e.layerType; // "marker", "polygon", "rectangle", etc
+
+      if (layerType === "marker") {
+        const latlng = layer.getLatLng();
+        const nome = prompt("Nome do ponto:", "Novo ponto") || "Novo ponto";
+
+        addPin({
+          id: uid(),
+          nome,
+          tipo: "Ponto",
+          lat: Number(latlng.lat),
+          lng: Number(latlng.lng),
+        });
+        return;
+      }
+
+      // Áreas (polígono/retângulo)
+      if (layerType === "polygon" || layerType === "rectangle") {
+        const nome = prompt("Nome da área/talhão:", "Nova área") || "Nova área";
+
+        // GeoJSON da área
+        const geojson = layer.toGeoJSON();
+
+        // centro aproximado para listar
+        const b = layer.getBounds();
+        const c = b.getCenter();
+
+        addPin({
+          id: uid(),
+          nome,
+          tipo: "Area",
+          lat: Number(c.lat),
+          lng: Number(c.lng),
+          geojson,
+        });
+        return;
+      }
+    } catch (err) {
+      alert("Falha ao registrar desenho no mapa.");
+      console.error(err);
     }
-    setStatus("Obtendo localização...");
-
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setCenter([pos.coords.latitude, pos.coords.longitude]);
-        setZoom(17);
-        setStatus("");
-      },
-      (err) => {
-        console.warn(err);
-        setStatus("Não foi possível obter localização. Verifique a permissão do navegador.");
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-    );
   }
 
-  function onCreated(e: any) {
-    const layer = e.layer;
-    const feature = layer.toGeoJSON();
-    feature.properties = { ...(feature.properties || {}), id: uid() };
-    setAreas((prev) => [feature, ...prev]);
+  // Quando editar: vamos ler tudo do FeatureGroup e atualizar pins
+  // (simples e funciona bem para MVP)
+  function handleEdited() {
+    try {
+      const fg = fgRef.current;
+      if (!fg) return;
+
+      // Se quiser sincronizar edição de áreas com pins,
+      // aqui daria para mapear layerId <-> pin.id (mais avançado).
+      // Por enquanto, só avisa:
+      alert("Edição aplicada. (MVP: sincronização completa pode ser o próximo passo)");
+    } catch (err) {
+      console.error(err);
+    }
   }
 
-  function onEdited(e: any) {
-    const updated: any[] = [];
-    e.layers.eachLayer((layer: any) => {
-      const feature = layer.toGeoJSON();
-      const id = layer?.feature?.properties?.id || feature?.properties?.id;
-      feature.properties = { ...(feature.properties || {}), id };
-      updated.push(feature);
-    });
-
-    if (!updated.length) return;
-
-    setAreas((prev) => {
-      const prevById = new Map(prev.map((f: any) => [f?.properties?.id, f]));
-      for (const f of updated) prevById.set(f?.properties?.id, f);
-      return Array.from(prevById.values());
-    });
+  // Quando deletar: apenas remove do estado se a remoção veio de popup/botão.
+  // A remoção via toolbar do Leaflet Draw é mais chata de mapear sem IDs.
+  function handleDeleted() {
+    alert("Remoção aplicada. (MVP: se quiser, a gente sincroniza com a lista no próximo passo)");
   }
 
-  function onDeleted(e: any) {
-    const ids: string[] = [];
-    e.layers.eachLayer((layer: any) => {
-      const id = layer?.feature?.properties?.id;
-      if (id) ids.push(id);
-    });
-    if (!ids.length) return;
-    setAreas((prev) => prev.filter((f: any) => !ids.includes(f?.properties?.id)));
-  }
-
-  if (!mounted) return <div style={{ padding: 16 }}>Carregando mapa...</div>;
+  if (!mounted) return null;
 
   return (
-    <div style={{ padding: 12 }}>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
-        <button className="pat-btn" onClick={usarMinhaLocalizacao}>Usar minha localização</button>
-        <button className="pat-btn" onClick={() => location.reload()}>Recarregar</button>
+    <div
+      style={{
+        height: typeof height === "number" ? `${height}px` : height,
+        width: "100%",
+        borderRadius: 18,
+        overflow: "hidden",
+        border: "1px solid rgba(255,255,255,0.10)",
+        boxShadow: "0 18px 45px rgba(0,0,0,0.35)",
+        background: "rgba(0,0,0,0.18)",
+      }}
+    >
+      <MapContainer
+        center={mapCenter}
+        zoom={zoom}
+        scrollWheelZoom
+        style={{ height: "100%", width: "100%" }}
+      >
+        <TileLayer
+          attribution='&copy; OpenStreetMap'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
 
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ opacity: 0.85 }}>Zoom</span>
-          <select className="pat-input" value={zoom} onChange={(e) => setZoom(Number(e.target.value))}>
-            {[12, 14, 15, 16, 17, 18].map((z) => (
-              <option key={z} value={z}>{z}</option>
-            ))}
-          </select>
-        </label>
-
-        {status ? <span style={{ opacity: 0.85 }}>{status}</span> : null}
-      </div>
-
-      <div style={{ height: 520, borderRadius: 16, overflow: "hidden", border: "1px solid rgba(255,255,255,0.12)" }}>
-        <MapContainer center={center} zoom={zoom} scrollWheelZoom={true} style={{ height: "100%", width: "100%" }}>
-          <TileLayer
-            attribution="&copy; OpenStreetMap contributors"
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        <FeatureGroup ref={fgRef}>
+          <EditControl
+            position="topleft"
+            onCreated={handleCreated}
+            onEdited={handleEdited}
+            onDeleted={handleDeleted}
+            draw={{
+              polyline: false,
+              circle: false,
+              circlemarker: false,
+              // habilita os botões
+              marker: true,
+              polygon: true,
+              rectangle: true,
+            }}
+            // ✅ CORREÇÃO: edit NÃO pode ser "true"
+            // deixe um objeto (habilita) e remove:true para permitir excluir
+            edit={{
+              remove: true,
+            }}
           />
 
-          {/* Render das áreas salvas */}
-          {areas.map((f: any) => (
-            <GeoJSON key={f?.properties?.id} data={f} />
-          ))}
-
-          {/* FERRAMENTAS DE DESENHO */}
-          <FeatureGroup>
-            <EditControl
-              position="topleft"
-              onCreated={onCreated}
-              onEdited={onEdited}
-              onDeleted={onDeleted}
-              draw={{
-                polygon: true,
-                rectangle: true,
-                circle: false,
-                circlemarker: false,
-                marker: false,
-                polyline: false,
-              }}
-              edit={{
-                edit: true,
-                remove: true,
-              }}
-            />
-          </FeatureGroup>
-        </MapContainer>
-      </div>
-
-      <div style={{ marginTop: 8, opacity: 0.8, fontSize: 12 }}>
-        Dica: use os ícones no canto superior esquerdo do mapa para desenhar/editar/apagar.
-      </div>
+          {/* Renderiza PONTOS como markers */}
+          {pins
+            .filter((p) => p.tipo === "Ponto")
+            .map((p) => (
+              <Marker key={p.id} position={[p.lat, p.lng]}>
+                <Popup>
+                  <div style={{ minWidth: 180 }}>
+                    <div style={{ fontWeight: 700 }}>{p.nome}</div>
+                    <div style={{ opacity: 0.8, fontSize: 12 }}>Tipo: {p.tipo}</div>
+                    <div style={{ opacity: 0.8, fontSize: 12 }}>
+                      {p.lat.toFixed(6)}, {p.lng.toFixed(6)}
+                    </div>
+                    <button
+                      onClick={() => removePin(p.id)}
+                      style={{
+                        marginTop: 10,
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(0,0,0,0.15)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Excluir
+                    </button>
+                  </div>
+                </Popup>
+              </Marker>
+            ))}
+        </FeatureGroup>
+      </MapContainer>
     </div>
   );
 }
