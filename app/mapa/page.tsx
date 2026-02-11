@@ -1,240 +1,210 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
+import "leaflet-draw/dist/leaflet.draw.css";
+
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 
-/**
- * Leaflet só no client (evita SSR/hydration)
- */
-const MapContainer = dynamic(
-  () => import("react-leaflet").then((m) => m.MapContainer),
-  { ssr: false }
-);
-const TileLayer = dynamic(
-  () => import("react-leaflet").then((m) => m.TileLayer),
-  { ssr: false }
-);
-const Marker = dynamic(
-  () => import("react-leaflet").then((m) => m.Marker),
-  { ssr: false }
-);
-const Popup = dynamic(
-  () => import("react-leaflet").then((m) => m.Popup),
-  { ssr: false }
-);
-
-/**
- * Componente helper para "recentralizar" o mapa quando muda o center.
- * (useMap só existe no client)
- */
-const Recenter = dynamic(
-  async () => {
-    const { useMap } = await import("react-leaflet");
-    return function RecenterInner({
-      lat,
-      lng,
-      zoom,
-    }: {
-      lat: number;
-      lng: number;
-      zoom?: number;
-    }) {
-      const map = useMap();
-      useEffect(() => {
-        map.setView([lat, lng], zoom ?? map.getZoom(), { animate: true });
-      }, [lat, lng, zoom, map]);
-      return null;
-    };
-  },
-  { ssr: false }
-);
+export const runtime = "nodejs";
 
 type Pin = {
   id: string;
   nome: string;
+  tipo: "Ponto" | "Área";
   lat: number;
   lng: number;
-  tipo: "Area" | "Ponto" | "Talhao" | "Outro";
-  obs?: string;
   createdAt: string;
 };
+
+type Center = [number, number];
+
+const MapContainer = dynamic(async () => (await import("react-leaflet")).MapContainer, { ssr: false });
+const TileLayer = dynamic(async () => (await import("react-leaflet")).TileLayer, { ssr: false });
+const Marker = dynamic(async () => (await import("react-leaflet")).Marker, { ssr: false });
+const Popup = dynamic(async () => (await import("react-leaflet")).Popup, { ssr: false });
+const FeatureGroup = dynamic(async () => (await import("react-leaflet")).FeatureGroup, { ssr: false });
+const GeoJSON = dynamic(async () => (await import("react-leaflet")).GeoJSON, { ssr: false });
+const EditControl = dynamic(async () => (await import("react-leaflet-draw")).EditControl, { ssr: false });
 
 function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-function round6(n: number) {
-  return Math.round(n * 1e6) / 1e6;
+function formatLatLng(n: number) {
+  return Number(n).toFixed(6);
 }
 
 export default function MapaPage() {
-  // Centro inicial (troque depois para sua fazenda)
+  // Centro inicial (pode trocar depois)
   const defaultCenter = useMemo(() => ({ lat: -21.551, lng: -45.43 }), []);
-  const defaultZoom = 12;
+  const defaultZoom = 13;
 
   const [mounted, setMounted] = useState(false);
 
+  // Pins (pontos) e Áreas (polígonos/retângulos) em GeoJSON
   const [pins, setPins] = useState<Pin[]>([]);
-  const [showModal, setShowModal] = useState(false);
+  const [areas, setAreas] = useState<any[]>([]);
 
-  // center atual do mapa (pode mudar com "usar minha localização")
-  const [mapCenter, setMapCenter] = useState(defaultCenter);
+  // UI
+  const [mapCenter, setMapCenter] = useState<Center>([defaultCenter.lat, defaultCenter.lng]);
   const [mapZoom, setMapZoom] = useState(defaultZoom);
-
-  // GPS
-  const [gpsBusy, setGpsBusy] = useState(false);
-  const [gpsError, setGpsError] = useState<string | null>(null);
-
-  const [form, setForm] = useState({
-    nome: "",
-    lat: String(defaultCenter.lat),
-    lng: String(defaultCenter.lng),
-    tipo: "Ponto" as Pin["tipo"],
-    obs: "",
-  });
-
   const [busca, setBusca] = useState("");
+  const [status, setStatus] = useState("");
 
+  // Modal simples (adicionar ponto)
+  const [showModal, setShowModal] = useState(false);
+  const [formNome, setFormNome] = useState("");
+  const [formTipo, setFormTipo] = useState<"Ponto" | "Área">("Ponto");
+  const [formLat, setFormLat] = useState<string>(String(defaultCenter.lat));
+  const [formLng, setFormLng] = useState<string>(String(defaultCenter.lng));
+
+  useEffect(() => setMounted(true), []);
+
+  // Fix ícones do Leaflet em produção (usa /public/leaflet/*)
   useEffect(() => {
-    setMounted(true);
+    if (!mounted) return;
+    (async () => {
+      const L = await import("leaflet");
+      // @ts-ignore
+      delete (L as any).Icon.Default.prototype._getIconUrl;
+      // @ts-ignore
+      (L as any).Icon.Default.mergeOptions({
+        iconRetinaUrl: "/leaflet/marker-icon-2x.png",
+        iconUrl: "/leaflet/marker-icon.png",
+        shadowUrl: "/leaflet/marker-shadow.png",
+      });
+    })();
+  }, [mounted]);
 
-    // Pins
+  // Load localStorage
+  useEffect(() => {
+    if (!mounted) return;
     try {
-      const raw = localStorage.getItem("agro_mapa_pins");
-      if (raw) setPins(JSON.parse(raw));
+      const rawPins = localStorage.getItem("agro_mapa_pins");
+      if (rawPins) setPins(JSON.parse(rawPins));
+      const rawAreas = localStorage.getItem("agro_mapa_areas");
+      if (rawAreas) setAreas(JSON.parse(rawAreas));
     } catch {}
+  }, [mounted]);
 
-    // Centro salvo (opcional)
-    try {
-      const rawCenter = localStorage.getItem("agro_mapa_center");
-      if (rawCenter) {
-        const c = JSON.parse(rawCenter);
-        if (typeof c?.lat === "number" && typeof c?.lng === "number") {
-          setMapCenter({ lat: c.lat, lng: c.lng });
-        }
-        if (typeof c?.zoom === "number") setMapZoom(c.zoom);
-      }
-    } catch {}
-  }, []);
-
+  // Save localStorage
   useEffect(() => {
     if (!mounted) return;
     try {
       localStorage.setItem("agro_mapa_pins", JSON.stringify(pins));
+      localStorage.setItem("agro_mapa_areas", JSON.stringify(areas));
     } catch {}
-  }, [pins, mounted]);
+  }, [pins, areas, mounted]);
 
-  useEffect(() => {
-    if (!mounted) return;
-    try {
-      localStorage.setItem(
-        "agro_mapa_center",
-        JSON.stringify({ lat: mapCenter.lat, lng: mapCenter.lng, zoom: mapZoom })
-      );
-    } catch {}
-  }, [mapCenter, mapZoom, mounted]);
+  function usarMinhaLocalizacao() {
+    if (!navigator.geolocation) {
+      setStatus("Geolocalização não suportada no navegador.");
+      return;
+    }
+    setStatus("Obtendo localização...");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        setMapCenter([lat, lng]);
+        setMapZoom(17);
+        setFormLat(String(lat));
+        setFormLng(String(lng));
+        setStatus("");
+      },
+      () => setStatus("Não foi possível obter localização. Verifique a permissão do navegador."),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  }
+
+  function recarregar() {
+    location.reload();
+  }
+
+  function limpar() {
+    setBusca("");
+  }
 
   const pinsFiltrados = useMemo(() => {
     const q = busca.trim().toLowerCase();
     if (!q) return pins;
     return pins.filter((p) => {
-      const hay = `${p.nome} ${p.tipo} ${p.obs || ""}`.toLowerCase();
-      return hay.includes(q);
+      return (
+        p.nome.toLowerCase().includes(q) ||
+        p.tipo.toLowerCase().includes(q) ||
+        String(p.lat).includes(q) ||
+        String(p.lng).includes(q)
+      );
     });
   }, [pins, busca]);
 
-  const meta = useMemo(() => {
-    const total = pins.length;
-    const areas = pins.filter((p) => p.tipo === "Area" || p.tipo === "Talhao").length;
-    const pontos = pins.filter((p) => p.tipo === "Ponto").length;
-    return { total, areas, pontos };
-  }, [pins]);
+  function salvarPonto() {
+    const nome = formNome.trim();
+    const lat = Number(formLat);
+    const lng = Number(formLng);
 
-  function openAdd() {
-    setGpsError(null);
-    setForm({
-      nome: "",
-      lat: String(mapCenter.lat),
-      lng: String(mapCenter.lng),
-      tipo: "Ponto",
-      obs: "",
-    });
-    setShowModal(true);
-  }
-
-  function salvar() {
-    const nome = form.nome.trim();
-    const lat = Number(form.lat);
-    const lng = Number(form.lng);
-
-    if (!nome) return alert("Informe o nome.");
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      return alert("Latitude/Longitude inválidas.");
+    if (!nome) {
+      alert("Informe o nome do ponto.");
+      return;
     }
-
-    const pin: Pin = {
-      id: uid(),
-      nome,
-      lat: round6(lat),
-      lng: round6(lng),
-      tipo: form.tipo,
-      obs: form.obs?.trim() || "",
-      createdAt: new Date().toISOString(),
-    };
-
-    setPins((prev) => [pin, ...prev]);
-    setShowModal(false);
-
-    // recenter no pin recém criado
-    setMapCenter({ lat: pin.lat, lng: pin.lng });
-    setMapZoom(16);
-  }
-
-  function remover(id: string) {
-    if (!confirm("Remover este ponto?")) return;
-    setPins((prev) => prev.filter((p) => p.id !== id));
-  }
-
-  function usarMinhaLocalizacao() {
-    setGpsError(null);
-
-    if (!("geolocation" in navigator)) {
-      setGpsError("Seu navegador não suporta geolocalização.");
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      alert("Lat/Lng inválidos.");
       return;
     }
 
-    setGpsBusy(true);
+    const novo: Pin = {
+      id: uid(),
+      nome,
+      tipo: formTipo,
+      lat,
+      lng,
+      createdAt: new Date().toISOString(),
+    };
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = round6(pos.coords.latitude);
-        const lng = round6(pos.coords.longitude);
-
-        setMapCenter({ lat, lng });
-        setMapZoom(16);
-
-        // se modal aberto, preenche os campos também
-        setForm((s) => ({ ...s, lat: String(lat), lng: String(lng) }));
-
-        setGpsBusy(false);
-      },
-      (err) => {
-        // mensagens amigáveis
-        let msg = "Não foi possível obter sua localização.";
-        if (err.code === err.PERMISSION_DENIED) msg = "Permissão de localização negada.";
-        if (err.code === err.POSITION_UNAVAILABLE) msg = "Localização indisponível.";
-        if (err.code === err.TIMEOUT) msg = "Tempo esgotado ao obter localização.";
-        setGpsError(msg);
-        setGpsBusy(false);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 12000,
-        maximumAge: 10000,
-      }
-    );
+    setPins((prev) => [novo, ...prev]);
+    setShowModal(false);
+    setFormNome("");
   }
+
+  // Leaflet Draw handlers
+  function onCreated(e: any) {
+    // Quando desenhar polígono/retângulo
+    const layer = e.layer;
+    const feature = layer.toGeoJSON();
+    feature.properties = { ...(feature.properties || {}), id: uid(), nome: "Área", tipo: "Área" };
+    setAreas((prev) => [feature, ...prev]);
+  }
+
+  function onEdited(e: any) {
+    const updated: any[] = [];
+    e.layers.eachLayer((layer: any) => {
+      const feature = layer.toGeoJSON();
+      const id = layer?.feature?.properties?.id || feature?.properties?.id;
+      feature.properties = { ...(feature.properties || {}), id };
+      updated.push(feature);
+    });
+
+    if (!updated.length) return;
+
+    setAreas((prev) => {
+      const map = new Map(prev.map((f: any) => [f?.properties?.id, f]));
+      for (const f of updated) map.set(f?.properties?.id, f);
+      return Array.from(map.values());
+    });
+  }
+
+  function onDeleted(e: any) {
+    const ids: string[] = [];
+    e.layers.eachLayer((layer: any) => {
+      const id = layer?.feature?.properties?.id;
+      if (id) ids.push(id);
+    });
+    if (!ids.length) return;
+    setAreas((prev) => prev.filter((f: any) => !ids.includes(f?.properties?.id)));
+  }
+
+  if (!mounted) return <div style={{ padding: 16 }}>Carregando…</div>;
 
   return (
     <div className="page-wrapper">
@@ -250,56 +220,51 @@ export default function MapaPage() {
             </div>
 
             <div className="pat-actions">
-              <button className="pat-btn" onClick={usarMinhaLocalizacao} disabled={gpsBusy}>
-                {gpsBusy ? "Localizando..." : "Usar minha localização"}
+              <button className="pat-btn" onClick={usarMinhaLocalizacao}>
+                Usar minha localização
               </button>
-
-              <button className="pat-btn" onClick={() => location.reload()}>
+              <button className="pat-btn" onClick={recarregar}>
                 Recarregar
               </button>
-
-              <button className="pat-btn pat-btn-primary" onClick={openAdd}>
+              <button className="pat-btn pat-btn-primary" onClick={() => setShowModal(true)}>
                 + Adicionar
               </button>
             </div>
           </div>
 
-          {gpsError ? (
-            <div className="pat-card" style={{ marginTop: 12 }}>
-              <div className="pat-muted" style={{ color: "#fff", opacity: 0.9 }}>
-                ⚠️ {gpsError}
-              </div>
-            </div>
-          ) : null}
-
           {/* Cards */}
-          <div className="pat-grid-3">
-            <div className="pat-metric">
-              <div className="pat-metric-label">Pins</div>
-              <div className="pat-metric-value">{meta.total}</div>
-              <div className="pat-metric-help">Pontos/áreas cadastrados</div>
+          <div className="pat-grid3" style={{ marginTop: 14 }}>
+            <div className="pat-card">
+              <div className="pat-card-label">Pins</div>
+              <div className="pat-card-value" style={{ color: "#fff" }}>
+                {pins.length}
+              </div>
+              <div className="pat-card-sub">Pontos/áreas cadastrados</div>
             </div>
 
-            <div className="pat-metric">
-              <div className="pat-metric-label">Áreas/Talhões</div>
-              <div className="pat-metric-value">{meta.areas}</div>
-              <div className="pat-metric-help">Marcação por área</div>
+            <div className="pat-card">
+              <div className="pat-card-label">Áreas/Talhões</div>
+              <div className="pat-card-value" style={{ color: "#fff" }}>
+                {areas.length}
+              </div>
+              <div className="pat-card-sub">Marcação por área</div>
             </div>
 
-            <div className="pat-metric">
-              <div className="pat-metric-label">Pontos</div>
-              <div className="pat-metric-value">{meta.pontos}</div>
-              <div className="pat-metric-help">Barracão, porteira, açude...</div>
+            <div className="pat-card">
+              <div className="pat-card-label">Pontos</div>
+              <div className="pat-card-value" style={{ color: "#fff" }}>
+                {pins.filter((p) => p.tipo === "Ponto").length}
+              </div>
+              <div className="pat-card-sub">Barracão, porteira, açude…</div>
             </div>
           </div>
 
           {/* Filtros */}
-          <div className="pat-card">
-            <div className="pat-card-title">Filtros</div>
-
-            <div className="pat-filters">
-              <div className="pat-field">
-                <label>Buscar</label>
+          <div className="pat-panel" style={{ marginTop: 14 }}>
+            <div className="pat-panel-title">Filtros</div>
+            <div className="pat-row" style={{ marginTop: 10 }}>
+              <div style={{ flex: 1, minWidth: 260 }}>
+                <div className="pat-label">Buscar</div>
                 <input
                   className="pat-input"
                   placeholder="Digite: talhão, barracão, porteira..."
@@ -307,209 +272,171 @@ export default function MapaPage() {
                   onChange={(e) => setBusca(e.target.value)}
                 />
               </div>
-
-              <div className="pat-filter-actions">
-                <button className="pat-btn" onClick={() => setBusca("")}>
-                  Limpar
-                </button>
-              </div>
+              <button className="pat-btn" onClick={limpar} style={{ alignSelf: "end" }}>
+                Limpar
+              </button>
+              {status ? <div style={{ opacity: 0.85, alignSelf: "end" }}>{status}</div> : null}
             </div>
           </div>
 
-          {/* Mapa + lista */}
-          <div className="pat-grid-2">
-            <div className="pat-card" style={{ minHeight: 520 }}>
-              <div className="pat-card-title">Mapa</div>
+          {/* Conteúdo: mapa + tabela */}
+          <div className="pat-grid2" style={{ marginTop: 14 }}>
+            <div className="pat-panel">
+              <div className="pat-panel-title">Mapa</div>
 
-              <div style={{ height: 460, marginTop: 10 }}>
-                {mounted ? (
-                  <MapContainer
-                    center={[mapCenter.lat, mapCenter.lng]}
-                    zoom={mapZoom}
-                    scrollWheelZoom={true}
-                    style={{ height: "100%", width: "100%" }}
-                  >
-                    <Recenter lat={mapCenter.lat} lng={mapCenter.lng} zoom={mapZoom} />
+              <div
+                style={{
+                  height: 520,
+                  marginTop: 10,
+                  borderRadius: 16,
+                  overflow: "hidden",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                }}
+              >
+                <MapContainer
+                  center={mapCenter}
+                  zoom={mapZoom}
+                  scrollWheelZoom={true}
+                  style={{ height: "100%", width: "100%" }}
+                >
+                  <TileLayer
+                    attribution="&copy; OpenStreetMap contributors"
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
 
-                    <TileLayer
-                      attribution='&copy; OpenStreetMap contributors'
-                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  {areas.map((f: any) => (
+                    <GeoJSON key={f?.properties?.id} data={f} />
+                  ))}
+
+                  {pins.map((p) => (
+                    <Marker key={p.id} position={[p.lat, p.lng]}>
+                      <Popup>
+                        <b>{p.nome}</b>
+                        <br />
+                        {p.tipo}
+                        <br />
+                        Lat: {formatLatLng(p.lat)}
+                        <br />
+                        Lng: {formatLatLng(p.lng)}
+                      </Popup>
+                    </Marker>
+                  ))}
+
+                  {/* BARRA DE DESENHO (POLÍGONO/RETÂNGULO/EDITAR/LIXEIRA) */}
+                  <FeatureGroup>
+                    <EditControl
+                      position="topleft"
+                      onCreated={onCreated}
+                      onEdited={onEdited}
+                      onDeleted={onDeleted}
+                      draw={{
+                        polygon: true,
+                        rectangle: true,
+                        polyline: false,
+                        circle: false,
+                        circlemarker: false,
+                        marker: false,
+                      }}
+                      edit={{ edit: true, remove: true }}
                     />
-
-                    {pinsFiltrados.map((p) => (
-                      <Marker key={p.id} position={[p.lat, p.lng]}>
-                        <Popup>
-                          <div style={{ fontWeight: 800, marginBottom: 4 }}>{p.nome}</div>
-                          <div style={{ fontSize: 12, opacity: 0.9 }}>
-                            Tipo: {p.tipo}
-                            <br />
-                            Lat/Lng: {p.lat}, {p.lng}
-                            {p.obs ? (
-                              <>
-                                <br />
-                                Obs: {p.obs}
-                              </>
-                            ) : null}
-                          </div>
-                        </Popup>
-                      </Marker>
-                    ))}
-                  </MapContainer>
-                ) : (
-                  <div className="pat-muted">Carregando mapa...</div>
-                )}
+                  </FeatureGroup>
+                </MapContainer>
               </div>
 
-              <div className="pat-muted" style={{ marginTop: 10 }}>
-                Centro atual: {mapCenter.lat.toFixed(5)}, {mapCenter.lng.toFixed(5)} (zoom {mapZoom})
+              <div style={{ marginTop: 8, opacity: 0.8, fontSize: 12 }}>
+                Dica: use os ícones no canto superior esquerdo do mapa para desenhar/editar/apagar áreas.
               </div>
             </div>
 
-            <div className="pat-card">
-              <div className="pat-card-title">Pins cadastrados</div>
+            <div className="pat-panel">
+              <div className="pat-panel-title">Pins cadastrados</div>
 
-              {pinsFiltrados.length === 0 ? (
-                <div className="pat-muted" style={{ marginTop: 10 }}>
-                  Nenhum pin encontrado. Clique em <b>+ Adicionar</b>.
-                </div>
-              ) : (
-                <div className="pat-table-wrap" style={{ marginTop: 10 }}>
-                  <table className="pat-table">
-                    <thead>
+              <div className="pat-table-wrap" style={{ marginTop: 10 }}>
+                <table className="pat-table">
+                  <thead>
+                    <tr>
+                      <th>Nome</th>
+                      <th>Tipo</th>
+                      <th>Lat</th>
+                      <th>Lng</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pinsFiltrados.length === 0 ? (
                       <tr>
-                        <th>Nome</th>
-                        <th>Tipo</th>
-                        <th>Lat</th>
-                        <th>Lng</th>
-                        <th style={{ textAlign: "right" }}>Ações</th>
+                        <td colSpan={4} style={{ opacity: 0.75 }}>
+                          Nenhum pin encontrado.
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {pinsFiltrados.map((p) => (
+                    ) : (
+                      pinsFiltrados.map((p) => (
                         <tr key={p.id}>
-                          <td style={{ fontWeight: 800 }}>{p.nome}</td>
+                          <td style={{ fontWeight: 700 }}>{p.nome}</td>
                           <td>{p.tipo}</td>
-                          <td>{p.lat.toFixed(5)}</td>
-                          <td>{p.lng.toFixed(5)}</td>
-                          <td style={{ textAlign: "right" }}>
-                            <button
-                              className="pat-btn"
-                              onClick={() => {
-                                setMapCenter({ lat: p.lat, lng: p.lng });
-                                setMapZoom(17);
-                              }}
-                            >
-                              Ir
-                            </button>{" "}
-                            <button className="pat-btn" onClick={() => remover(p.id)}>
-                              Excluir
-                            </button>
-                          </td>
+                          <td>{formatLatLng(p.lat)}</td>
+                          <td>{formatLatLng(p.lng)}</td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
 
-              <div className="pat-muted" style={{ marginTop: 10 }}>
+              <div style={{ marginTop: 8, opacity: 0.8, fontSize: 12 }}>
                 Fonte: localStorage (por enquanto).
               </div>
             </div>
           </div>
 
-          {/* Modal */}
+          {/* Modal adicionar ponto */}
           {showModal ? (
             <div className="pat-modal-backdrop" onClick={() => setShowModal(false)}>
               <div className="pat-modal" onClick={(e) => e.stopPropagation()}>
                 <div className="pat-modal-header">
                   <div>
                     <div className="pat-modal-title">Adicionar pin</div>
-                    <div className="pat-modal-subtitle">Cadastre um ponto/área pelo GPS</div>
+                    <div className="pat-modal-subtitle">Cadastre um ponto de referência (ou área manual).</div>
                   </div>
-                  <div style={{ display: "flex", gap: 10 }}>
-                    <button className="pat-btn" onClick={usarMinhaLocalizacao} disabled={gpsBusy}>
-                      {gpsBusy ? "Localizando..." : "Usar minha localização"}
-                    </button>
-                    <button className="pat-btn" onClick={() => setShowModal(false)}>
-                      Fechar
-                    </button>
-                  </div>
+                  <button className="pat-btn" onClick={() => setShowModal(false)}>
+                    Fechar
+                  </button>
                 </div>
 
-                {gpsError ? (
-                  <div style={{ padding: "0 18px 10px 18px" }}>
-                    <div className="pat-muted" style={{ color: "#fff", opacity: 0.9 }}>
-                      ⚠️ {gpsError}
-                    </div>
+                <div className="pat-form">
+                  <div className="pat-field">
+                    <div className="pat-label">Nome</div>
+                    <input className="pat-input" value={formNome} onChange={(e) => setFormNome(e.target.value)} />
                   </div>
-                ) : null}
 
-                <div className="pat-modal-body">
-                  <div className="pat-form-grid">
+                  <div className="pat-field">
+                    <div className="pat-label">Tipo</div>
+                    <select
+                      className="pat-input"
+                      value={formTipo}
+                      onChange={(e) => setFormTipo(e.target.value as any)}
+                    >
+                      <option value="Ponto">Ponto</option>
+                      <option value="Área">Área</option>
+                    </select>
+                  </div>
+
+                  <div className="pat-grid2" style={{ marginTop: 10 }}>
                     <div className="pat-field">
-                      <label>Nome</label>
-                      <input
-                        className="pat-input"
-                        value={form.nome}
-                        onChange={(e) => setForm((s) => ({ ...s, nome: e.target.value }))}
-                        placeholder="Ex: Barracão, Talhão 3, Açude..."
-                      />
+                      <div className="pat-label">Lat</div>
+                      <input className="pat-input" value={formLat} onChange={(e) => setFormLat(e.target.value)} />
                     </div>
-
                     <div className="pat-field">
-                      <label>Tipo</label>
-                      <select
-                        className="pat-select"
-                        value={form.tipo}
-                        onChange={(e) =>
-                          setForm((s) => ({ ...s, tipo: e.target.value as Pin["tipo"] }))
-                        }
-                      >
-                        <option value="Ponto">Ponto</option>
-                        <option value="Area">Área</option>
-                        <option value="Talhao">Talhão</option>
-                        <option value="Outro">Outro</option>
-                      </select>
-                    </div>
-
-                    <div className="pat-field">
-                      <label>Latitude</label>
-                      <input
-                        className="pat-input"
-                        value={form.lat}
-                        onChange={(e) => setForm((s) => ({ ...s, lat: e.target.value }))}
-                        placeholder="-21.551"
-                      />
-                    </div>
-
-                    <div className="pat-field">
-                      <label>Longitude</label>
-                      <input
-                        className="pat-input"
-                        value={form.lng}
-                        onChange={(e) => setForm((s) => ({ ...s, lng: e.target.value }))}
-                        placeholder="-45.43"
-                      />
-                    </div>
-
-                    <div className="pat-field" style={{ gridColumn: "1 / -1" }}>
-                      <label>Observação</label>
-                      <input
-                        className="pat-input"
-                        value={form.obs}
-                        onChange={(e) => setForm((s) => ({ ...s, obs: e.target.value }))}
-                        placeholder="Ex: entrada pelo lado norte, perto da cerca..."
-                      />
+                      <div className="pat-label">Lng</div>
+                      <input className="pat-input" value={formLng} onChange={(e) => setFormLng(e.target.value)} />
                     </div>
                   </div>
                 </div>
 
-                <div className="pat-modal-footer">
+                <div className="pat-modal-actions">
                   <button className="pat-btn" onClick={() => setShowModal(false)}>
                     Cancelar
                   </button>
-                  <button className="pat-btn pat-btn-primary" onClick={salvar}>
+                  <button className="pat-btn pat-btn-primary" onClick={salvarPonto}>
                     Salvar
                   </button>
                 </div>
