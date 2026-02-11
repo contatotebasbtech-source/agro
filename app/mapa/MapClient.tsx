@@ -1,267 +1,320 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import dynamic from "next/dynamic";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { MapContainer, TileLayer, Marker, Popup, Polygon, useMapEvents } from "react-leaflet";
 
-// CSS do Leaflet + Draw (IMPORTANTE para aparecer ícones/botões)
 import "leaflet/dist/leaflet.css";
-import "leaflet-draw/dist/leaflet.draw.css";
 
-// react-leaflet e react-leaflet-draw precisam rodar só no client
-const MapContainer = dynamic(
-  () => import("react-leaflet").then((m) => m.MapContainer),
-  { ssr: false }
-);
-const TileLayer = dynamic(() => import("react-leaflet").then((m) => m.TileLayer), {
-  ssr: false,
-});
-const FeatureGroup = dynamic(
-  () => import("react-leaflet").then((m) => m.FeatureGroup),
-  { ssr: false }
-);
-const Marker = dynamic(() => import("react-leaflet").then((m) => m.Marker), {
-  ssr: false,
-});
-const Popup = dynamic(() => import("react-leaflet").then((m) => m.Popup), {
-  ssr: false,
-});
-
-// EditControl vem do react-leaflet-draw
-const EditControl = dynamic(
-  () => import("react-leaflet-draw").then((m) => m.EditControl),
-  { ssr: false }
-);
-
-type PinTipo = "Ponto" | "Area";
-
+// ====== TIPOS EXPORTADOS (usados no page.tsx) ======
 export type Pin = {
   id: string;
   nome: string;
-  tipo: PinTipo;
+  tipo: string; // ex: "Ponto"
   lat: number;
   lng: number;
-  // quando for área (polígono/retângulo), guardamos GeoJSON
-  geojson?: any;
+  createdAt: string;
 };
 
-type Props = {
-  center: { lat: number; lng: number };
-  zoom: number;
+export type Area = {
+  id: string;
+  nome: string;
+  tipo: string; // ex: "Área"
+  points: Array<[number, number]>; // [lat,lng]
+  createdAt: string;
+};
+
+// ====== STORAGE ======
+const STORAGE_KEY = "agro_mapa_v2"; // novo pra evitar lixo antigo
+
+type StorageShape = {
   pins: Pin[];
-  onPinsChange: (next: Pin[]) => void;
-  height?: number | string;
+  areas: Area[];
 };
 
-function uid() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+function safeParseStorage(raw: string | null): StorageShape {
+  if (!raw) return { pins: [], areas: [] };
+  try {
+    const obj = JSON.parse(raw);
+
+    const pins = Array.isArray(obj?.pins) ? obj.pins : [];
+    const areas = Array.isArray(obj?.areas) ? obj.areas : [];
+
+    return { pins, areas };
+  } catch {
+    return { pins: [], areas: [] };
+  }
 }
 
-export default function MapClient({
-  center,
-  zoom,
-  pins,
-  onPinsChange,
-  height = 380,
-}: Props) {
-  const mountedRef = useRef(false);
-  const fgRef = useRef<any>(null);
+function saveStorage(data: StorageShape) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // ignore
+  }
+}
 
-  // Corrige ícones padrão do Leaflet (sem precisar colocar arquivos no /public)
+function uid(prefix = "id") {
+  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+}
+
+function brNow() {
+  try {
+    return new Date().toLocaleString("pt-BR");
+  } catch {
+    return "";
+  }
+}
+
+// ====== PROPS ======
+export default function MapClient(props: {
+  center: { lat: number; lng: number };
+  zoom: number;
+  onReload: (pins: Pin[], areas: Area[]) => void;
+  filterPins: Pin[];
+  filterAreas: Area[];
+}) {
+  const { center, zoom, onReload, filterPins, filterAreas } = props;
+
+  const [pins, setPins] = useState<Pin[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
+
+  const [mode, setMode] = useState<"idle" | "pin" | "area">("idle");
+
+  // area “em construção”
+  const [draftAreaPoints, setDraftAreaPoints] = useState<Array<[number, number]>>([]);
+  const draftAreaPointsRef = useRef<Array<[number, number]>>([]);
   useEffect(() => {
-    let cancelled = false;
+    draftAreaPointsRef.current = draftAreaPoints;
+  }, [draftAreaPoints]);
 
-    (async () => {
-      try {
-        const L: any = await import("leaflet");
+  // ====== carregar do storage ======
+  function reloadFromStorage() {
+    const s = safeParseStorage(localStorage.getItem(STORAGE_KEY));
 
-        // Evita erro em hot-reload
-        if (cancelled) return;
+    // garante arrays sempre
+    const nextPins = Array.isArray(s.pins) ? s.pins : [];
+    const nextAreas = Array.isArray(s.areas) ? s.areas : [];
 
-        delete L.Icon.Default.prototype._getIconUrl;
+    setPins(nextPins);
+    setAreas(nextAreas);
+    onReload(nextPins, nextAreas);
 
-        L.Icon.Default.mergeOptions({
-          iconRetinaUrl:
-            "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-          iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-          shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-        });
-      } catch {
-        // se falhar, não quebra o app
-      }
-    })();
+    // “conserta” storage se estava quebrado
+    saveStorage({ pins: nextPins, areas: nextAreas });
+  }
 
-    return () => {
-      cancelled = true;
-    };
+  useEffect(() => {
+    reloadFromStorage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Só renderiza mapa depois de montar (evita mismatch)
-  const [mounted, setMounted] = useState(false);
+  // ====== listeners (events do page.tsx) ======
   useEffect(() => {
-    mountedRef.current = true;
-    setMounted(true);
-    return () => {
-      mountedRef.current = false;
+    const onMode = (ev: any) => {
+      const m = ev?.detail?.mode;
+      if (m === "pin") {
+        setMode("pin");
+        setDraftAreaPoints([]);
+      } else if (m === "area") {
+        setMode("area");
+        setDraftAreaPoints([]);
+      } else {
+        setMode("idle");
+        setDraftAreaPoints([]);
+      }
     };
+
+    const onReloadEvt = () => reloadFromStorage();
+
+    const onDelete = (ev: any) => {
+      const id = String(ev?.detail?.id || "");
+      const kind = ev?.detail?.kind as "pin" | "area";
+      if (!id) return;
+
+      const s = safeParseStorage(localStorage.getItem(STORAGE_KEY));
+      let nextPins = Array.isArray(s.pins) ? s.pins : [];
+      let nextAreas = Array.isArray(s.areas) ? s.areas : [];
+
+      if (kind === "pin") nextPins = nextPins.filter((p) => p.id !== id);
+      if (kind === "area") nextAreas = nextAreas.filter((a) => a.id !== id);
+
+      saveStorage({ pins: nextPins, areas: nextAreas });
+      setPins(nextPins);
+      setAreas(nextAreas);
+      onReload(nextPins, nextAreas);
+    };
+
+    window.addEventListener("agro:mapa:mode" as any, onMode);
+    window.addEventListener("agro:mapa:reload" as any, onReloadEvt);
+    window.addEventListener("agro:mapa:delete" as any, onDelete);
+
+    return () => {
+      window.removeEventListener("agro:mapa:mode" as any, onMode);
+      window.removeEventListener("agro:mapa:reload" as any, onReloadEvt);
+      window.removeEventListener("agro:mapa:delete" as any, onDelete);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const mapCenter = useMemo(() => [center.lat, center.lng] as [number, number], [center]);
-
-  function addPin(pin: Pin) {
-    const next = [pin, ...pins];
-    onPinsChange(next);
+  // ====== salvar helpers ======
+  function persist(nextPins: Pin[], nextAreas: Area[]) {
+    saveStorage({ pins: nextPins, areas: nextAreas });
+    setPins(nextPins);
+    setAreas(nextAreas);
+    onReload(nextPins, nextAreas);
   }
 
-  function removePin(id: string) {
-    const next = pins.filter((p) => p.id !== id);
-    onPinsChange(next);
+  function addPin(lat: number, lng: number) {
+    const nome = prompt("Nome do ponto (ex: Barracão, Porteira, Açude):", "Ponto");
+    if (!nome) return;
+
+    const p: Pin = {
+      id: uid("pin"),
+      nome: nome.trim(),
+      tipo: "Ponto",
+      lat,
+      lng,
+      createdAt: brNow(),
+    };
+
+    const nextPins = [p, ...pins];
+    persist(nextPins, areas);
+    setMode("idle");
   }
 
-  // Quando desenha algo no mapa
-  async function handleCreated(e: any) {
-    try {
-      const layer = e.layer;
-      const layerType = e.layerType; // "marker", "polygon", "rectangle", etc
+  function addAreaVertex(lat: number, lng: number) {
+    // adiciona pontos para formar polígono
+    setDraftAreaPoints((prev) => [...prev, [lat, lng]]);
+  }
 
-      if (layerType === "marker") {
-        const latlng = layer.getLatLng();
-        const nome = prompt("Nome do ponto:", "Novo ponto") || "Novo ponto";
-
-        addPin({
-          id: uid(),
-          nome,
-          tipo: "Ponto",
-          lat: Number(latlng.lat),
-          lng: Number(latlng.lng),
-        });
-        return;
-      }
-
-      // Áreas (polígono/retângulo)
-      if (layerType === "polygon" || layerType === "rectangle") {
-        const nome = prompt("Nome da área/talhão:", "Nova área") || "Nova área";
-
-        // GeoJSON da área
-        const geojson = layer.toGeoJSON();
-
-        // centro aproximado para listar
-        const b = layer.getBounds();
-        const c = b.getCenter();
-
-        addPin({
-          id: uid(),
-          nome,
-          tipo: "Area",
-          lat: Number(c.lat),
-          lng: Number(c.lng),
-          geojson,
-        });
-        return;
-      }
-    } catch (err) {
-      alert("Falha ao registrar desenho no mapa.");
-      console.error(err);
+  function finishArea() {
+    const pts = draftAreaPointsRef.current;
+    if (!pts || pts.length < 3) {
+      alert("Para criar uma área, clique no mapa pelo menos 3 vezes (3 vértices).");
+      return;
     }
+
+    const nome = prompt("Nome da área/talhão:", "Talhão 1");
+    if (!nome) return;
+
+    const a: Area = {
+      id: uid("area"),
+      nome: nome.trim(),
+      tipo: "Área",
+      points: pts,
+      createdAt: brNow(),
+    };
+
+    const nextAreas = [a, ...areas];
+    persist(pins, nextAreas);
+
+    setDraftAreaPoints([]);
+    setMode("idle");
   }
 
-  // Quando editar: vamos ler tudo do FeatureGroup e atualizar pins
-  // (simples e funciona bem para MVP)
-  function handleEdited() {
-    try {
-      const fg = fgRef.current;
-      if (!fg) return;
-
-      // Se quiser sincronizar edição de áreas com pins,
-      // aqui daria para mapear layerId <-> pin.id (mais avançado).
-      // Por enquanto, só avisa:
-      alert("Edição aplicada. (MVP: sincronização completa pode ser o próximo passo)");
-    } catch (err) {
-      console.error(err);
-    }
+  function cancelArea() {
+    setDraftAreaPoints([]);
+    setMode("idle");
   }
 
-  // Quando deletar: apenas remove do estado se a remoção veio de popup/botão.
-  // A remoção via toolbar do Leaflet Draw é mais chata de mapear sem IDs.
-  function handleDeleted() {
-    alert("Remoção aplicada. (MVP: se quiser, a gente sincroniza com a lista no próximo passo)");
+  // ====== componente que captura cliques no mapa ======
+  function ClickHandler() {
+    useMapEvents({
+      click(e) {
+        if (mode === "pin") addPin(e.latlng.lat, e.latlng.lng);
+        if (mode === "area") addAreaVertex(e.latlng.lat, e.latlng.lng);
+      },
+    });
+    return null;
   }
 
-  if (!mounted) return null;
+  // usa os filtrados vindos do page, mas se vierem errados, cai pro estado interno
+  const safePinsToShow = useMemo(() => (Array.isArray(filterPins) ? filterPins : pins), [filterPins, pins]);
+  const safeAreasToShow = useMemo(() => (Array.isArray(filterAreas) ? filterAreas : areas), [filterAreas, areas]);
+
+  // ====== UI do topo do mapa (modo) ======
+  const modeBanner =
+    mode === "pin"
+      ? "Modo: adicionar PONTO (clique no mapa)."
+      : mode === "area"
+      ? `Modo: criar ÁREA (${draftAreaPoints.length} vértices). Clique para adicionar vértices.`
+      : "";
 
   return (
-    <div
-      style={{
-        height: typeof height === "number" ? `${height}px` : height,
-        width: "100%",
-        borderRadius: 18,
-        overflow: "hidden",
-        border: "1px solid rgba(255,255,255,0.10)",
-        boxShadow: "0 18px 45px rgba(0,0,0,0.35)",
-        background: "rgba(0,0,0,0.18)",
-      }}
-    >
+    <div className="relative">
+      {/* Banner de modo */}
+      {mode !== "idle" && (
+        <div className="absolute left-3 top-3 z-[1000] max-w-[92%] rounded-2xl border border-white/15 bg-black/60 px-4 py-3 text-sm font-semibold text-white shadow">
+          <div>{modeBanner}</div>
+
+          {mode === "area" && (
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={finishArea}
+                className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500"
+              >
+                Salvar área
+              </button>
+              <button
+                onClick={cancelArea}
+                className="rounded-xl border border-white/20 bg-white/5 px-3 py-1.5 text-xs font-bold text-white hover:bg-white/10"
+              >
+                Cancelar
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       <MapContainer
-        center={mapCenter}
+        center={[center.lat, center.lng]}
         zoom={zoom}
-        scrollWheelZoom
-        style={{ height: "100%", width: "100%" }}
+        scrollWheelZoom={true}
+        style={{ height: 420, width: "100%" }}
       >
+        <ClickHandler />
+
         <TileLayer
           attribution='&copy; OpenStreetMap'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        <FeatureGroup ref={fgRef}>
-          <EditControl
-            position="topleft"
-            onCreated={handleCreated}
-            onEdited={handleEdited}
-            onDeleted={handleDeleted}
-            draw={{
-              polyline: false,
-              circle: false,
-              circlemarker: false,
-              // habilita os botões
-              marker: true,
-              polygon: true,
-              rectangle: true,
-            }}
-            // ✅ CORREÇÃO: edit NÃO pode ser "true"
-            // deixe um objeto (habilita) e remove:true para permitir excluir
-            edit={{
-              remove: true,
-            }}
-          />
+        {/* áreas salvas */}
+        {safeAreasToShow.map((a) => (
+          <Polygon key={a.id} positions={a.points}>
+            <Popup>
+              <div style={{ minWidth: 180 }}>
+                <div style={{ fontWeight: 800 }}>{a.nome}</div>
+                <div style={{ opacity: 0.8, fontSize: 12 }}>{a.tipo}</div>
+                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9 }}>
+                  Criado: {a.createdAt}
+                </div>
+              </div>
+            </Popup>
+          </Polygon>
+        ))}
 
-          {/* Renderiza PONTOS como markers */}
-          {pins
-            .filter((p) => p.tipo === "Ponto")
-            .map((p) => (
-              <Marker key={p.id} position={[p.lat, p.lng]}>
-                <Popup>
-                  <div style={{ minWidth: 180 }}>
-                    <div style={{ fontWeight: 700 }}>{p.nome}</div>
-                    <div style={{ opacity: 0.8, fontSize: 12 }}>Tipo: {p.tipo}</div>
-                    <div style={{ opacity: 0.8, fontSize: 12 }}>
-                      {p.lat.toFixed(6)}, {p.lng.toFixed(6)}
-                    </div>
-                    <button
-                      onClick={() => removePin(p.id)}
-                      style={{
-                        marginTop: 10,
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(0,0,0,0.15)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      Excluir
-                    </button>
-                  </div>
-                </Popup>
-              </Marker>
-            ))}
-        </FeatureGroup>
+        {/* polígono em construção */}
+        {mode === "area" && draftAreaPoints.length >= 2 && (
+          <Polygon positions={draftAreaPoints} />
+        )}
+
+        {/* pins */}
+        {safePinsToShow.map((p) => (
+          <Marker key={p.id} position={[p.lat, p.lng]}>
+            <Popup>
+              <div style={{ minWidth: 180 }}>
+                <div style={{ fontWeight: 800 }}>{p.nome}</div>
+                <div style={{ opacity: 0.8, fontSize: 12 }}>{p.tipo}</div>
+                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9 }}>
+                  Lat: {p.lat.toFixed(6)} <br />
+                  Lng: {p.lng.toFixed(6)} <br />
+                  Criado: {p.createdAt}
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
       </MapContainer>
     </div>
   );
